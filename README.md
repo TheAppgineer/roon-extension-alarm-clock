@@ -35,7 +35,7 @@ Roon Extension to start or stop playback on a specific zone at a specific time
     ```
     cd <local_folder>/roon-extension-alarm-clock
     ```
-    *Replace <local_folder> with the local folder path*
+    *Replace `<local_folder>` with the local folder path*
 
 1. Install the dependencies
     ```bash

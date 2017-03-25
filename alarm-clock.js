@@ -47,7 +47,7 @@ var fade_volume = [];
 var roon = new RoonApi({
     extension_id:        'com.theappgineer.alarm-clock',
     display_name:        'Alarm Clock',
-    display_version:     '0.1.1',
+    display_version:     '0.1.2',
     publisher:           'The Appgineer',
     email:               'theappgineer@gmail.com',
     website:             'https://github.com/TheAppgineer/roon-extension-alarm-clock',
@@ -62,7 +62,7 @@ var roon = new RoonApi({
 });
 
 var wake_settings = roon.load_config("settings") || {
-    selected_timer:     0,
+    selected_timer:     0
 };
 
 function makelayout(settings) {
@@ -356,6 +356,7 @@ function set_timer() {
     for (let i = 0; i < ALARM_COUNT; i++) {
         if (settings["timer_active_" + i] && settings["zone_" + i]) {
             let date = new Date();
+            let tz_offset = date.getTimezoneOffset();
 
             date.setHours(settings["wake_time_hours_" + i]);
             date.setMinutes(settings["wake_time_minutes_" + i]);
@@ -406,6 +407,12 @@ function set_timer() {
             }
 
             timeout_time += days_to_skip * 24 * 60 * 60 * 1000;
+            date = new Date(timeout_time);
+            tz_offset -= date.getTimezoneOffset();
+
+            if (tz_offset) {
+                timeout_time -= tz_offset * 60 * 1000;
+            }
             if (next_alarm_timeout == 0 || timeout_time < next_alarm_timeout) {
                 next_alarm_timeout = timeout_time;
                 action_string = (fade_time ? "Faded " : "");

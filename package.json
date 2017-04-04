@@ -1,6 +1,6 @@
 {
     "name": "roon-extension-alarm-clock",
-    "version": "0.1.2",
+    "version": "0.2.0",
     "description": "Roon Extension to start or stop playback on a specific zone at a specific time",
     "main": "alarm-clock.js",
     "author": "The Appgineer",

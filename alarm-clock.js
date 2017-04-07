@@ -48,7 +48,7 @@ var fade_volume = [];
 var roon = new RoonApi({
     extension_id:        'com.theappgineer.alarm-clock',
     display_name:        'Alarm Clock',
-    display_version:     '0.2.0',
+    display_version:     '0.2.1',
     publisher:           'The Appgineer',
     email:               'theappgineer@gmail.com',
     website:             'https://github.com/TheAppgineer/roon-extension-alarm-clock',
@@ -347,7 +347,7 @@ function get_alarm_title(settings, index) {
         }
 
         if (valid_time.relative) {
-            title += "in " + (valid_time.hours ? valid_time.hours + "h and " : "");
+            title += " in " + (valid_time.hours ? valid_time.hours + "h and " : "");
             title += valid_time.minutes + "min";
         } else {
             title += " @ " + valid_time.friendly;
@@ -547,6 +547,12 @@ function set_timer() {
             }
 
             timeout_id[i] = setTimeout(timer_timed_out, timeout_time, i);
+        } else {
+            if (timeout_id[i] != null) {
+                // Clear pending timeout
+                clearTimeout(timeout_id[i]);
+                timeout_id[i] = null;
+            }
         }
     }
 

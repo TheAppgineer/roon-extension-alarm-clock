@@ -49,7 +49,7 @@ var fade_volume = [];
 var roon = new RoonApi({
     extension_id:        'com.theappgineer.alarm-clock',
     display_name:        'Alarm Clock',
-    display_version:     '0.3.0',
+    display_version:     '0.3.1',
     publisher:           'The Appgineer',
     email:               'theappgineer@gmail.com',
     website:             'https://github.com/TheAppgineer/roon-extension-alarm-clock',
@@ -120,7 +120,7 @@ function makelayout(settings) {
 
         if (zone) {
             // Get volume information from output
-            current_volume = get_current_volume(zone.output_id);
+            current_volume = get_current_volume_by_output_id(zone.output_id);
 
             if (current_volume && settings["wake_volume_" + i] == null) {
                 settings["wake_volume_" + i] = current_volume.max;
@@ -429,7 +429,6 @@ function validate_time_string(time_string, allow_relative) {
         am_pm = valid_time_string.substring(am_pm_index, am_pm_index + 2);
         is_am = (am_pm.toLowerCase() == "am");
         is_pm = (am_pm.toLowerCase() == "pm");
-        console.log(am_pm, is_am, is_pm, hours);
 
         // Check hour range
         if (is_am || is_pm) {
@@ -468,7 +467,7 @@ function validate_time_string(time_string, allow_relative) {
     };
 }
 
-function get_current_volume(output_id) {
+function get_current_volume_by_output_id(output_id) {
     return get_current_volume(transport.zone_by_output_id(output_id), output_id);
 }
 

@@ -26,6 +26,7 @@ const ACTION_NONE = -1;
 const ACTION_STOP = 0;
 const ACTION_PLAY = 1;
 const ACTION_TRANSFER = 2;
+const ACTION_STANDBY = 3;
 
 const SUN     = 0;
 const MON     = 1;
@@ -39,8 +40,8 @@ const DAILY   = 8;
 const MON_FRI = 9;
 const WEEKEND = 10;
 
-var core = null;
-var wake_zone = [];
+var core = undefined;
+var transport = undefined;
 var timeout_id = [];
 var interval_id = [];
 var fade_volume = [];
@@ -48,17 +49,19 @@ var fade_volume = [];
 var roon = new RoonApi({
     extension_id:        'com.theappgineer.alarm-clock',
     display_name:        'Alarm Clock',
-    display_version:     '0.2.1',
+    display_version:     '0.3.0',
     publisher:           'The Appgineer',
     email:               'theappgineer@gmail.com',
     website:             'https://github.com/TheAppgineer/roon-extension-alarm-clock',
 
     core_paired: function(core_) {
         core = core_;
-        core.services.RoonApiTransport.subscribe_zones(function(response, msg) { });
+        transport = core.services.RoonApiTransport;
+        transport.subscribe_zones(function(response, msg) { });
     },
     core_unpaired: function(core_) {
         core = undefined;
+        transport = undefined;
     }
 });
 
@@ -128,8 +131,9 @@ function makelayout(settings) {
             type:    "dropdown",
             title:   "Action",
             values:  [
-                { title: "Stop",     value: ACTION_STOP     },
                 { title: "Play",     value: ACTION_PLAY     },
+                { title: "Stop",     value: ACTION_STOP     },
+                { title: "Standby",  value: ACTION_STANDBY  },
                 { title: "Transfer", value: ACTION_TRANSFER }
             ],
             setting: "wake_action_" + i
@@ -184,7 +188,9 @@ function makelayout(settings) {
             l.has_error = true;
         }
 
-        if (zone && settings["wake_action_" + i] != ACTION_STOP) {
+        let action = settings["wake_action_" + i];
+
+        if (zone && (action == ACTION_PLAY || action == ACTION_TRANSFER)) {
             if (current_volume) {
                 let v = {
                     type:    "integer",
@@ -205,7 +211,7 @@ function makelayout(settings) {
             }
         }
 
-        if (settings["wake_action_" + i] != ACTION_TRANSFER) {
+        if (action != ACTION_TRANSFER) {
             v = {
                 type:    "integer",
                 min:     0,
@@ -363,6 +369,9 @@ function get_action_string(action) {
     let action_string = "";
 
     switch (action) {
+        case ACTION_STANDBY:
+            action_string = "Standby";
+            break;
         case ACTION_STOP:
             action_string = "Stop";
             break;
@@ -459,6 +468,24 @@ function validate_time_string(time_string, allow_relative) {
     };
 }
 
+function get_current_volume(output_id) {
+    return get_current_volume(transport.zone_by_output_id(output_id), output_id);
+}
+
+function get_current_volume(zone, output_id) {
+    let volume = null;
+
+    if (zone && zone.outputs) {
+        zone.outputs.forEach(function(output) {
+            if (output.output_id == output_id) {
+                volume = output.volume;
+            }
+        });
+    }
+
+    return volume;
+}
+
 function set_timer() {
     let settings = wake_settings;
     let next_alarm_timeout = 0;
@@ -547,12 +574,10 @@ function set_timer() {
             }
 
             timeout_id[i] = setTimeout(timer_timed_out, timeout_time, i);
-        } else {
-            if (timeout_id[i] != null) {
-                // Clear pending timeout
-                clearTimeout(timeout_id[i]);
-                timeout_id[i] = null;
-            }
+        } else if (timeout_id[i] != null) {
+            // Clear pending timeout
+            clearTimeout(timeout_id[i]);
+            timeout_id[i] = null;
         }
     }
 
@@ -570,36 +595,35 @@ function set_timer() {
 
 function timer_timed_out(i) {
     let settings = wake_settings;
-    let zone = settings["zone_" + i];
+    let output = settings["zone_" + i];
 
     timeout_id[i] = null;
 
     if (core) {
         let action = settings["wake_action_" + i];
 
-        // Get wake_zone from settings.zone.output_id
-        wake_zone[i] = core.services.RoonApiTransport.zone_by_output_id(zone.output_id);
+        let zone = transport.zone_by_output_id(output.output_id);
 
-        if (wake_zone[i] && (wake_zone[i].is_play_allowed || action != ACTION_PLAY)) {
+        if (zone && (zone.is_play_allowed || action != ACTION_PLAY)) {
             const fade_time = +settings["fade_time_" + i];
             let end_volume = settings["wake_volume_" + i];
-            let current_volume = get_current_volume(zone.output_id);
+            let current_volume = get_current_volume(zone, output.output_id);
 
             if (current_volume && action != ACTION_TRANSFER && fade_time > 0) {
+                // Take care of fading
                 let start_volume;
 
-                if (wake_zone[i].state == 'playing') {
+                if (zone.state == 'playing') {
                     start_volume = current_volume.value;
                 } else {
                     start_volume = current_volume.min;
                 }
 
-                if (action == ACTION_STOP) {
+                if (action == ACTION_STANDBY || action == ACTION_STOP) {
                     end_volume = current_volume.min;
                 }
 
                 if (end_volume != start_volume) {
-                    // Take care of fading
                     let ms_per_step = (fade_time * 60 * 1000) / Math.abs(end_volume - start_volume);
 
                     if (interval_id[i] != null) {
@@ -609,7 +633,8 @@ function timer_timed_out(i) {
                     interval_id[i] = setInterval(take_fade_step, ms_per_step,
                                                  i, start_volume, end_volume);
 
-                    if (wake_zone[i].state == 'playing' && action == ACTION_STOP) {
+                    if (zone.state == 'playing' &&
+                        (action == ACTION_STANDBY || action == ACTION_STOP)) {
                         // Remain playing during fade out
                         action = ACTION_NONE;
                     }
@@ -622,23 +647,42 @@ function timer_timed_out(i) {
             switch (action) {
                 case ACTION_PLAY:
                     // Set wake volume, even if already playing
-                    core.services.RoonApiTransport.change_volume(zone, "absolute", end_volume);
+                    transport.change_volume(output, "absolute", end_volume);
 
-                    if (wake_zone[i].state != 'playing') {
-                        core.services.RoonApiTransport.control(zone, 'play');
+                    if (zone.state != 'playing') {
+                        transport.control(output, 'play');
                     }
                     break;
                 case ACTION_STOP:
-                    if (wake_zone[i].state == 'playing') {
-                        core.services.RoonApiTransport.control(zone, 'pause');
+                    if (zone.state == 'playing') {
+                        transport.control(output, 'pause');
+                    }
+                    break;
+                case ACTION_STANDBY:
+                    if (zone.state == 'playing') {
+                        transport.control(output, 'pause', function(error) {
+                            if (!error) {
+                                transport.standby(output, {}, function(error) {
+                                    if (error) {
+                                        console.log("Output doesn't support standby");
+                                    }
+                                });
+                            }
+                        });
+                    } else {
+                        transport.standby(output, {}, function(error) {
+                            if (error) {
+                                console.log("Output doesn't support standby");
+                            }
+                        });
                     }
                     break;
                 case ACTION_TRANSFER:
                     let transfer_zone = settings["transfer_zone_" + i];
 
                     // Set volume for the zone we transfer to
-                    core.services.RoonApiTransport.change_volume(transfer_zone, "absolute", end_volume);
-                    core.services.RoonApiTransport.transfer_zone(zone, transfer_zone);
+                    transport.change_volume(transfer_zone, "absolute", end_volume);
+                    transport.transfer_zone(output, transfer_zone);
                     break;
                 case ACTION_NONE:
                 default:
@@ -664,59 +708,68 @@ function timer_timed_out(i) {
     set_timer();
 }
 
-function get_current_volume(output_id) {
-    let zone = core.services.RoonApiTransport.zone_by_output_id(output_id);
-    let volume = null;
-
-    if (zone && zone.outputs) {
-        zone.outputs.forEach(function(output) {
-            if (output.output_id == output_id) {
-                volume = output.volume;
-            }
-        });
-    }
-
-    return volume;
-}
-
 function take_fade_step(index, start_volume, end_volume) {
-    let zone = wake_settings["zone_" + index];
+    let output = wake_settings["zone_" + index];
     let step = (start_volume < end_volume ? 1 : -1);
-    let current_volume = get_current_volume(zone.output_id);
+    let zone = transport.zone_by_output_id(output.output_id);
+    let current_volume = get_current_volume(zone, output.output_id);
 
-    if (current_volume) {
-        // Detect volume control collisions, allow for 1 step volume set back
-        if (current_volume.value - fade_volume[index] > 1) {
-            // Somebody else is turning the knob as well, hands off
-            clearInterval(interval_id[index]);
+    // Detect volume control collisions, allow for 1 step volume set back
+    if (current_volume && current_volume.value - fade_volume[index] > 1) {
+        // Somebody else is turning the knob as well, hands off
+        clearInterval(interval_id[index]);
+        interval_id[index] = null;
+        console.log("Fading terminated for alarm " + (index + 1));
+    } else if (zone.state != 'playing') {
+        // Playback is stopped manually
+        clearInterval(interval_id[index]);
+        interval_id[index] = null;
 
-            console.log("Fading terminated for alarm " + (index + 1));
-        } else {
-            if (fade_volume[index] != end_volume) {
-                // Fade one step
-                fade_volume[index] += step;
-                core.services.RoonApiTransport.change_volume(zone, "absolute", fade_volume[index]);
-            } else {
-                // Level reached, clear interval
-                clearInterval(interval_id[index]);
+        // Restore start volume
+        transport.change_volume(output, "absolute", start_volume);
+    } else if (fade_volume[index] != end_volume) {
+        // Fade one step
+        fade_volume[index] += step;
+        transport.change_volume(output, "absolute", fade_volume[index]);
+    } else {
+        // Level reached, clear interval
+        clearInterval(interval_id[index]);
+        interval_id[index] = null;
 
-                if (end_volume == current_volume.min && wake_zone[index].state == 'playing') {
-                    // Stop playback
-                    core.services.RoonApiTransport.control(wake_zone[index], 'pause', function(error) {
-                        if (error == false) {
-                            // Restore start volume
-                            core.services.RoonApiTransport.change_volume(zone, "absolute", start_volume);
-                        }
-                    });
-                }
-            }
+        switch (wake_settings["wake_action_" + index]) {
+            case ACTION_STOP:
+                // Stop playback
+                transport.control(output, 'pause', function(error) {
+                    if (!error) {
+                        // Restore start volume
+                        transport.change_volume(output, "absolute", start_volume);
+                    }
+                });
+                break;
+            case ACTION_STANDBY:
+                // Stop playback
+                transport.control(output, 'pause', function(error) {
+                    if (!error) {
+                        // Restore start volume
+                        transport.change_volume(output, "absolute", start_volume, function(error) {
+                            if (!error) {
+                                // Switch to standby
+                                transport.standby(output, {}, function(error) {
+                                    if (error) {
+                                        console.log("Output doesn't support standby");
+                                    }
+                                });
+                            }
+                        });
+                    }
+                });
+                break;
         }
     }
 }
 
 function init() {
     for (let i = 0; i < ALARM_COUNT; i++) {
-        wake_zone.push(null);
         timeout_id.push(null);
         interval_id.push(null);
         fade_volume.push(null);

@@ -42,6 +42,7 @@ const WEEKEND = 10;
 
 var core = undefined;
 var transport = undefined;
+var waiting_zones = [];
 var timeout_id = [];
 var interval_id = [];
 var fade_volume = [];
@@ -49,7 +50,7 @@ var fade_volume = [];
 var roon = new RoonApi({
     extension_id:        'com.theappgineer.alarm-clock',
     display_name:        'Alarm Clock',
-    display_version:     '0.3.1',
+    display_version:     '0.4.0',
     publisher:           'The Appgineer',
     email:               'theappgineer@gmail.com',
     website:             'https://github.com/TheAppgineer/roon-extension-alarm-clock',
@@ -57,7 +58,39 @@ var roon = new RoonApi({
     core_paired: function(core_) {
         core = core_;
         transport = core.services.RoonApiTransport;
-        transport.subscribe_zones(function(response, msg) { });
+        transport.subscribe_zones((response, msg) => {
+            let zones = [];
+
+            if (response == "Subscribed") {
+                zones = msg.zones;
+            } else if (response == "Changed") {
+                if (msg.zones_changed) {
+                    zones = msg.zones_changed;
+                }
+                if (msg.zones_added) {
+                    zones = msg.zones_added;
+                }
+            }
+
+            if (zones) {
+                zones.forEach(function(zone) {
+                    let on_match = waiting_zones[zone.zone_id];
+
+                    if (on_match) {
+                        const play_allowed = on_match.flags.is_play_allowed;
+                        const pause_allowed = on_match.flags.is_pause_allowed;
+
+                        if ((play_allowed != undefined && play_allowed == zone.is_play_allowed) ||
+                            (pause_allowed != undefined && pause_allowed == zone.is_pause_allowed)) {
+                            if (on_match.cb) {
+                                on_match.cb(zone);
+                            }
+                            waiting_zones[zone.zone_id] = undefined;
+                        }
+                    }
+                });
+            }
+        });
     },
     core_unpaired: function(core_) {
         core = undefined;
@@ -68,6 +101,15 @@ var roon = new RoonApi({
 var wake_settings = roon.load_config("settings") || {
     selected_timer: 0
 };
+
+function wait_for_zone_flag(zone_id, flags, cb) {
+    let on_match = {
+        flags: flags,
+        cb:    cb
+    };
+
+    waiting_zones[zone_id] = on_match;
+}
 
 function makelayout(settings) {
     var l = {
@@ -592,126 +634,138 @@ function set_timer() {
     }
 }
 
-function timer_timed_out(i) {
+function timer_timed_out(index) {
     let settings = wake_settings;
-    let output = settings["zone_" + i];
 
-    timeout_id[i] = null;
+    timeout_id[index] = null;
 
     if (core) {
-        let action = settings["wake_action_" + i];
-
+        const output = settings["zone_" + index];
         let zone = transport.zone_by_output_id(output.output_id);
 
-        if (zone && (zone.is_play_allowed || action != ACTION_PLAY)) {
-            const fade_time = +settings["fade_time_" + i];
-            let end_volume = settings["wake_volume_" + i];
-            let current_volume = get_current_volume(zone, output.output_id);
+        if (zone) {
+            const action = settings["wake_action_" + index];
 
-            if (current_volume && action != ACTION_TRANSFER && fade_time > 0) {
-                // Take care of fading
-                let start_volume;
-
-                if (zone.state == 'playing') {
-                    start_volume = current_volume.value;
-                } else {
-                    start_volume = current_volume.min;
-                }
-
-                if (action == ACTION_STANDBY || action == ACTION_STOP) {
-                    end_volume = current_volume.min;
-                }
-
-                if (end_volume != start_volume) {
-                    let ms_per_step = (fade_time * 60 * 1000) / Math.abs(end_volume - start_volume);
-
-                    if (interval_id[i] != null) {
-                        clearInterval(interval_id[i]);
-                    }
-
-                    interval_id[i] = setInterval(take_fade_step, ms_per_step,
-                                                 i, start_volume, end_volume);
-
-                    if (zone.state == 'playing' &&
-                        (action == ACTION_STANDBY || action == ACTION_STOP)) {
-                        // Remain playing during fade out
-                        action = ACTION_NONE;
-                    }
-
-                    end_volume = start_volume;
-                    fade_volume[i] = start_volume;
-                }
-            }
-
-            switch (action) {
-                case ACTION_PLAY:
-                    // Set wake volume, even if already playing
-                    transport.change_volume(output, "absolute", end_volume);
-
-                    if (zone.state != 'playing') {
-                        transport.control(output, 'play');
-                    }
-                    break;
-                case ACTION_STOP:
-                    if (zone.state == 'playing') {
-                        transport.control(output, 'pause');
-                    }
-                    break;
-                case ACTION_STANDBY:
-                    if (zone.state == 'playing') {
-                        transport.control(output, 'pause', function(error) {
-                            if (!error) {
-                                transport.standby(output, {}, function(error) {
-                                    if (error) {
-                                        console.log("Output doesn't support standby");
-                                    }
-                                });
-                            }
-                        });
-                    } else {
-                        transport.standby(output, {}, function(error) {
-                            if (error) {
-                                console.log("Output doesn't support standby");
-                            }
+            if (action == ACTION_PLAY && zone.state != 'playing' &&
+                !zone.is_play_allowed && zone.is_previous_allowed) {
+                // Start off with previous track
+                transport.control(output, 'previous', function(error) {
+                    if (!error) {
+                        wait_for_zone_flag(zone.zone_id, { is_play_allowed: true }, function(zone) {
+                            control(settings, zone, output, index);
                         });
                     }
-                    break;
-                case ACTION_TRANSFER:
-                    let transfer_zone = settings["transfer_zone_" + i];
+                });
 
-                    // Set volume for the zone we transfer to
-                    transport.change_volume(transfer_zone, "absolute", end_volume);
-                    transport.transfer_zone(output, transfer_zone);
-                    break;
-                case ACTION_NONE:
-                default:
-                    break;
+                // Turn radio function on to keep the music going
+                transport.change_settings(zone, { auto_radio: true });
             }
+
+            control(settings, zone, output, index);
         }
     }
 
-    let date = new Date();
-    let day = date.getDay();
-    let wake_day = settings["wake_day_" + i];
+    const date = new Date();
+    const day = date.getDay();
+    const wake_day = settings["wake_day_" + index];
 
-    if (settings["repeat_" + i] == false &&
+    if (settings["repeat_" + index] == false &&
         ((wake_day <= ONCE) ||
          (wake_day == WEEKEND && day == SUN) ||
          (wake_day == MON_FRI && day == FRI) ||
          (wake_day == DAILY && day == SAT))) {
         // Disable this timer
-        settings["timer_active_" + i] = false;
+        settings["timer_active_" + index] = false;
         roon.save_config("settings", settings);
     }
 
     set_timer();
 }
 
+function control(settings, zone, output, index) {
+    const fade_time = +settings["fade_time_" + index];
+    const current_volume = get_current_volume(zone, output.output_id);
+    let end_volume = settings["wake_volume_" + index];
+    let action = settings["wake_action_" + index];
+
+    if (current_volume && action != ACTION_TRANSFER && fade_time > 0) {
+        // Take care of fading
+        let start_volume;
+
+        if (zone.state == 'playing') {
+            start_volume = current_volume.value;
+        } else {
+            start_volume = current_volume.min;
+        }
+
+        if (action == ACTION_STANDBY || action == ACTION_STOP) {
+            end_volume = current_volume.min;
+        }
+
+        if (end_volume != start_volume) {
+            let ms_per_step = (fade_time * 60 * 1000) / Math.abs(end_volume - start_volume);
+
+            if (interval_id[index] != null) {
+                clearInterval(interval_id[index]);
+            }
+
+            interval_id[index] = setInterval(take_fade_step, ms_per_step,
+                                                index, start_volume, end_volume);
+
+            if (zone.state == 'playing' &&
+                (action == ACTION_STANDBY || action == ACTION_STOP)) {
+                // Remain playing during fade out
+                action = ACTION_NONE;
+            }
+
+            end_volume = start_volume;
+            fade_volume[index] = start_volume;
+        }
+    }
+
+    switch (action) {
+        case ACTION_PLAY:
+            // Set wake volume, even if already playing
+            transport.change_volume(output, "absolute", end_volume);
+
+            if (zone.state != 'playing') {
+                transport.control(output, 'play');
+            }
+            break;
+        case ACTION_STOP:
+        case ACTION_STANDBY:
+            if (zone.state == 'playing') {
+                transport.control(output, zone.is_pause_allowed ? 'pause' : 'stop');
+            }
+
+            if (action == ACTION_STANDBY) {
+                wait_for_zone_flag(zone.zone_id, { is_play_allowed: true }, function(zone) {
+                    transport.standby(output, {}, function(error) {
+                        if (error) {
+                            console.log("Output doesn't support standby");
+                        }
+                    });
+                });
+            }
+            break;
+        case ACTION_TRANSFER:
+            let transfer_zone = settings["transfer_zone_" + index];
+
+            // Set volume for the zone we transfer to
+            transport.change_volume(transfer_zone, "absolute", end_volume);
+            transport.transfer_zone(output, transfer_zone);
+            break;
+        case ACTION_NONE:
+        default:
+            break;
+    }
+}
+
 function take_fade_step(index, start_volume, end_volume) {
     let output = wake_settings["zone_" + index];
     let step = (start_volume < end_volume ? 1 : -1);
     let zone = transport.zone_by_output_id(output.output_id);
-    let current_volume = get_current_volume(zone, output.output_id);
+    const current_volume = get_current_volume(zone, output.output_id);
 
     // Detect volume control collisions, allow for 1 step volume set back
     if (current_volume && current_volume.value - fade_volume[index] > 1) {
@@ -720,12 +774,15 @@ function take_fade_step(index, start_volume, end_volume) {
         interval_id[index] = null;
         console.log("Fading terminated for alarm " + (index + 1));
     } else if (zone.state != 'playing') {
-        // Playback is stopped manually
-        clearInterval(interval_id[index]);
-        interval_id[index] = null;
+        // Postpone fading in case data is still loading
+        if (zone.state != 'loading') {
+            // Playback is stopped manually
+            clearInterval(interval_id[index]);
+            interval_id[index] = null;
 
-        // Restore start volume
-        transport.change_volume(output, "absolute", start_volume);
+            // Restore start volume
+            transport.change_volume(output, "absolute", start_volume);
+        }
     } else if (fade_volume[index] != end_volume) {
         // Fade one step
         fade_volume[index] += step;
@@ -735,34 +792,25 @@ function take_fade_step(index, start_volume, end_volume) {
         clearInterval(interval_id[index]);
         interval_id[index] = null;
 
-        switch (wake_settings["wake_action_" + index]) {
-            case ACTION_STOP:
-                // Stop playback
-                transport.control(output, 'pause', function(error) {
-                    if (!error) {
-                        // Restore start volume
-                        transport.change_volume(output, "absolute", start_volume);
-                    }
-                });
-                break;
-            case ACTION_STANDBY:
-                // Stop playback
-                transport.control(output, 'pause', function(error) {
-                    if (!error) {
-                        // Restore start volume
-                        transport.change_volume(output, "absolute", start_volume, function(error) {
-                            if (!error) {
-                                // Switch to standby
-                                transport.standby(output, {}, function(error) {
-                                    if (error) {
-                                        console.log("Output doesn't support standby");
-                                    }
-                                });
+        const action = wake_settings["wake_action_" + index];
+
+        if (action == ACTION_STOP || action == ACTION_STANDBY) {
+            // Stop playback
+            transport.control(output, zone.is_pause_allowed ? 'pause' : 'stop');
+
+            wait_for_zone_flag(zone.zone_id, { is_play_allowed: true }, function(zone) {
+                // Restore start volume
+                transport.change_volume(output, "absolute", start_volume, function(error) {
+                    if (!error && action == ACTION_STANDBY) {
+                        // Switch to standby
+                        transport.standby(output, {}, function(error) {
+                            if (error) {
+                                console.log("Output doesn't support standby");
                             }
                         });
                     }
                 });
-                break;
+            });
         }
     }
 }

@@ -19,7 +19,7 @@ var RoonApi          = require("node-roon-api"),
     RoonApiStatus    = require('node-roon-api-status'),
     RoonApiTransport = require('node-roon-api-transport');
 
-const EXPECTED_CONFIG_REV = 1;
+const EXPECTED_CONFIG_REV = 2;
 const ALARM_COUNT = 5;
 
 const ACTION_NONE = -1;
@@ -40,9 +40,14 @@ const DAILY   = 8;
 const MON_FRI = 9;
 const WEEKEND = 10;
 
+const TRANS_INSTANT    = 0;
+const TRANS_FADING     = 1;
+const TRANS_TRACKBOUND = 2;
+
 var core = undefined;
 var transport = undefined;
-var waiting_zones = [];
+var waiting_zones = {};
+var pending_alarms = [];
 var timeout_id = [];
 var interval_id = [];
 var fade_volume = [];
@@ -50,7 +55,7 @@ var fade_volume = [];
 var roon = new RoonApi({
     extension_id:        'com.theappgineer.alarm-clock',
     display_name:        'Alarm Clock',
-    display_version:     '0.4.0',
+    display_version:     '0.5.0',
     publisher:           'The Appgineer',
     email:               'theappgineer@gmail.com',
     website:             'https://github.com/TheAppgineer/roon-extension-alarm-clock',
@@ -74,18 +79,33 @@ var roon = new RoonApi({
 
             if (zones) {
                 zones.forEach(function(zone) {
-                    let on_match = waiting_zones[zone.zone_id];
+                    const on_match = waiting_zones[zone.zone_id];
 
-                    if (on_match) {
-                        const play_allowed = on_match.flags.is_play_allowed;
-                        const pause_allowed = on_match.flags.is_pause_allowed;
+                    if (on_match && on_match.properties) {
+                        let match = false;
 
-                        if ((play_allowed != undefined && play_allowed == zone.is_play_allowed) ||
-                            (pause_allowed != undefined && pause_allowed == zone.is_pause_allowed)) {
+                        if (on_match.properties.now_playing) {
+                            const seek_position = on_match.properties.now_playing.seek_position;
+
+                            // Sometimes a seek_position is missed by the API, allow 1 off
+                            match = (seek_position != undefined && zone.now_playing &&
+                                     (seek_position == zone.now_playing.seek_position ||
+                                      seek_position + 1 == zone.now_playing.seek_position));
+                        }
+                        if (!match) {
+                            const play_allowed = on_match.properties.is_play_allowed;
+                            const pause_allowed = on_match.properties.is_pause_allowed;
+                            const state = on_match.properties.state;
+
+                            match = ((play_allowed != undefined && play_allowed == zone.is_play_allowed) ||
+                                     (pause_allowed != undefined && pause_allowed == zone.is_pause_allowed) ||
+                                     (state != undefined && state == zone.state));
+                        }
+                        if (match) {
                             if (on_match.cb) {
                                 on_match.cb(zone);
                             }
-                            waiting_zones[zone.zone_id] = undefined;
+                            delete waiting_zones[zone.zone_id];
                         }
                     }
                 });
@@ -102,13 +122,8 @@ var wake_settings = roon.load_config("settings") || {
     selected_timer: 0
 };
 
-function wait_for_zone_flag(zone_id, flags, cb) {
-    let on_match = {
-        flags: flags,
-        cb:    cb
-    };
-
-    waiting_zones[zone_id] = on_match;
+function on_zone_property_changed(zone_id, properties, cb) {
+    waiting_zones[zone_id] = { properties: properties, cb: cb };
 }
 
 function makelayout(settings) {
@@ -201,21 +216,22 @@ function makelayout(settings) {
         };
         group.items.push(v);
 
-        let day = settings["wake_day_" + i];
-        let allow_rel_timer = 0;
-
-        if (day == ONCE) {
-            // 'Once' implies no repeat
-            settings["repeat_" + i] = false;
-            allow_rel_timer = 1;
-        }
-
         v = {
             type:    "string",
             title:   "Alarm Time",
             setting: "wake_time_" + i
         };
         group.items.push(v);
+
+        const day = settings["wake_day_" + i];
+        let allow_rel_timer = 0;
+
+        if (day == ONCE) {
+            // 'Once' implies no repeat
+            settings["repeat_" + i] = false;
+            allow_rel_timer = 1;
+            v.title += " (use '+' for relative alarm)";
+        }
 
         let valid_time = validate_time_string(settings["wake_time_" + i], allow_rel_timer);
 
@@ -232,41 +248,45 @@ function makelayout(settings) {
 
         let action = settings["wake_action_" + i];
 
-        if (zone && (action == ACTION_PLAY || action == ACTION_TRANSFER)) {
-            if (current_volume) {
-                let v = {
-                    type:    "integer",
-                    min:     current_volume.min,
-                    max:     current_volume.max,
-                    title:   "Volume",
-                    setting: "wake_volume_" + i
-                };
-                let volume = settings["wake_volume_" + i];
-                if (current_volume.type == "db") {
-                    v.title += " (dB)"
-                }
-                if (volume < v.min || volume > v.max) {
-                    v.error = "Wake Volume must be between " + v.min + " and " + v.max + ".";
-                    l.has_error = true;
-                }
-                group.items.push(v);
-            }
-        }
-
-        if (action != ACTION_TRANSFER) {
-            v = {
+        if ((action == ACTION_PLAY || action == ACTION_TRANSFER) && current_volume) {
+            let v = {
                 type:    "integer",
-                min:     0,
-                max:     30,
-                title:   "Fade Time",
-                setting: "fade_time_" + i
+                min:     current_volume.min,
+                max:     current_volume.max,
+                title:   "Volume",
+                setting: "wake_volume_" + i
             };
-            let fade_time = settings["fade_time_" + i];
-            if (fade_time < v.min || fade_time > v.max) {
-                v.error = "Fade Time must be between " + v.min + " and " + v.max + " minutes.";
+            let volume = settings["wake_volume_" + i];
+            if (current_volume.type == "db") {
+                v.title += " (dB)"
+            }
+            if (volume < v.min || volume > v.max) {
+                v.error = "Wake Volume must be between " + v.min + " and " + v.max + ".";
                 l.has_error = true;
             }
             group.items.push(v);
+        }
+
+        let transitions = {
+            type:    "dropdown",
+            title:   "Transition Type",
+            values:  [ { title: "Instant", value: TRANS_INSTANT } ],
+            setting: "transition_type_" + i
+        };
+
+        if (action != ACTION_TRANSFER) {
+            if (current_volume) {
+                transitions.values.push({
+                    title: "Fading",
+                    value: TRANS_FADING
+                });
+            }
+            if (action == ACTION_STOP || action == ACTION_STANDBY) {
+                transitions.values.push({
+                    title: "Track Boundary",
+                    value: TRANS_TRACKBOUND
+                });
+            }
         } else {
             v = {
                 type:    "zone",
@@ -274,6 +294,26 @@ function makelayout(settings) {
                 setting: "transfer_zone_" + i
             };
             group.items.push(v);
+        }
+
+        if (transitions.values.length > 1) {
+            group.items.push(transitions);
+
+            if (settings["transition_type_" + i] != TRANS_INSTANT) {
+                v = {
+                    type:    "integer",
+                    min:     0,
+                    max:     30,
+                    title:   "Transition Time",
+                    setting: "transition_time_" + i
+                };
+                let trans_time = settings["transition_time_" + i];
+                if (trans_time < v.min || trans_time > v.max) {
+                    v.error = "Transition Time must be between " + v.min + " and " + v.max + " minutes.";
+                    l.has_error = true;
+                }
+                group.items.push(v);
+            }
         }
 
         // Hide repeat for 'Once'
@@ -298,15 +338,16 @@ function makelayout(settings) {
 
 function set_defaults(settings, index, force) {
     if (force || settings["timer_active_" + index] == null) {
-        settings["timer_active_"  + index] = false;
-        settings["zone_"          + index] = null;
-        settings["wake_action_"   + index] = ACTION_PLAY;
-        settings["wake_day_"      + index] = ONCE;
-        settings["wake_time_"     + index] = "07:00";
-        settings["wake_volume_"   + index] = null;
-        settings["fade_time_"     + index] = "0";
-        settings["transfer_zone_" + index] = null;
-        settings["repeat_"        + index] = false;
+        settings["timer_active_"    + index] = false;
+        settings["zone_"            + index] = null;
+        settings["wake_action_"     + index] = ACTION_PLAY;
+        settings["wake_day_"        + index] = ONCE;
+        settings["wake_time_"       + index] = "07:00";
+        settings["wake_volume_"     + index] = null;
+        settings["transition_type_" + index] = TRANS_INSTANT;
+        settings["transition_time_" + index] = "0";
+        settings["transfer_zone_"   + index] = null;
+        settings["repeat_"          + index] = false;
 
         return true;
     }
@@ -324,10 +365,23 @@ function validate_config(settings) {
             switch (config_rev) {
                 case undefined:
                     // Update to configuration revision 1
-                    let wake_time = "" + settings["wake_time_hours_" + i] +
-                                    ":" + settings["wake_time_minutes_" + i];
+                    const wake_time = "" + settings["wake_time_hours_" + i] +
+                                      ":" + settings["wake_time_minutes_" + i];
 
                     settings["wake_time_" + i] = wake_time;
+                    corrected = true;
+                    break;
+                case 1:
+                    const fade_time = settings["fade_time_" + i];
+
+                    settings["transition_type_" + i] = (fade_time > 0 ? TRANS_FADING : TRANS_INSTANT);
+                    settings["transition_time_" + i] = fade_time;
+
+                    // Cleanup obsolete settings
+                    delete settings["wake_time_hours_" + i];
+                    delete settings["wake_time_minutes_" + i];
+                    delete settings["fade_time_" + i];
+
                     corrected = true;
                     break;
                 case EXPECTED_CONFIG_REV:
@@ -426,6 +480,38 @@ function get_action_string(action) {
     }
 
     return action_string;
+}
+
+function add_pending_alarm(entry) {
+    let i;
+
+    for (i = 0; i < pending_alarms.length; i++) {
+        if (pending_alarms[i].timeout > entry.timeout) {
+            break;
+        }
+    }
+
+    pending_alarms.splice(i, 0, entry);
+}
+
+function get_pending_alarms_string() {
+    const day = ['Sun', 'Mon', 'Tue', 'Wed', 'Thu', 'Fri', 'Sat'];
+    let alarm_string = "";
+
+    for (let i = 0; i < pending_alarms.length; i++) {
+        const date_time = new Date(pending_alarms[i].timeout);
+
+        alarm_string += pending_alarms[i].action + " on " + day[date_time.getDay()];
+        alarm_string += " @ " + date_time.toLocaleTimeString() + "\n";
+    }
+
+    if (alarm_string.length) {
+        alarm_string = "Pending Alarms:\n" + alarm_string;
+    } else {
+        alarm_string = "No active Alarms";
+    }
+
+    return alarm_string;
 }
 
 function validate_time_string(time_string, allow_relative) {
@@ -527,111 +613,117 @@ function get_current_volume(zone, output_id) {
     return volume;
 }
 
-function set_timer() {
+function set_timer(reset) {
+    const now = new Date();
     let settings = wake_settings;
-    let next_alarm_timeout = 0;
-    let action_string;
 
-    for (let i = 0; i < ALARM_COUNT; i++) {
-        if (settings["timer_active_" + i] && settings["zone_" + i]) {
-            const action = settings["wake_action_" + i];
-            const wake_day = settings["wake_day_" + i];
-            const fade_time = +settings["fade_time_" + i];    // string to integer
-            let date = new Date();
-
-            // Configuration is already validated at this point, get processed fields
-            let valid_time = validate_time_string(settings["wake_time_" + i], wake_day == ONCE);
-
-            date.setSeconds(0);
-            date.setMilliseconds(0);
-
-            let timeout_time = date.getTime();
-
-            if (valid_time.relative) {
-                timeout_time += (valid_time.hours * 60 + valid_time.minutes) * 60 * 1000;
-            } else {
-                let tz_offset = date.getTimezoneOffset();
-                let day = date.getDay();
-                let days_to_skip = 0;
-
-                date.setHours(valid_time.hours);
-                date.setMinutes(valid_time.minutes);
-                timeout_time = date.getTime();
-
-                if (fade_time && action == ACTION_PLAY) {
-                    // Subtract fade time to reach the configured volume at the configured time
-                    timeout_time -= fade_time * 60 * 1000;
-                }
-
-                if (wake_day < 7) {
-                    days_to_skip = (wake_day + 7 - day) % 7;
-                }
-
-                if (days_to_skip == 0 && timeout_time < Date.now()) {
-                    // Time has passed for today
-                    if (wake_day < 7) {
-                        // Next week
-                        days_to_skip = 7;
-                    } else {
-                        // Tomorrow
-                        days_to_skip = 1;
-                        day = (day + 1) % 7;
-                    }
-                }
-
-                if (wake_day == MON_FRI) {
-                    switch (day) {
-                        case SUN:
-                            // Sunday
-                            days_to_skip += 1;
-                            break;
-                        case SAT:
-                            // Saterday
-                            days_to_skip += 2;
-                            break;
-                    }
-                } else if (wake_day == WEEKEND && day > SUN && day < SAT) {
-                    days_to_skip += SAT - day;
-                }
-
-                timeout_time += days_to_skip * 24 * 60 * 60 * 1000;
-                date = new Date(timeout_time);
-                tz_offset -= date.getTimezoneOffset();
-
-                if (tz_offset) {
-                    timeout_time -= tz_offset * 60 * 1000;
-                }
+    if (reset) {
+        pending_alarms = [];
+    } else {
+        // Remove expired alarms
+        for (let i = pending_alarms.length - 1; i >= 0; i--) {
+            if (pending_alarms[i].timeout <= now.getTime()) {
+                pending_alarms.splice(0, i + 1);
+                break;
             }
-            if (next_alarm_timeout == 0 || timeout_time < next_alarm_timeout) {
-                next_alarm_timeout = timeout_time;
-                action_string = (fade_time ? "Faded " : "");
-                action_string += get_action_string(action);
-            }
-            timeout_time -= Date.now();
-
-            if (timeout_id[i] != null) {
-                // Clear pending timeout
-                clearTimeout(timeout_id[i]);
-            }
-
-            timeout_id[i] = setTimeout(timer_timed_out, timeout_time, i);
-        } else if (timeout_id[i] != null) {
-            // Clear pending timeout
-            clearTimeout(timeout_id[i]);
-            timeout_id[i] = null;
         }
     }
 
-    if (next_alarm_timeout) {
-        // Report time of next alarm
-        let date_time = new Date(next_alarm_timeout);
-        let alarm_string = "Next Alarm (" + action_string + "):\n" + date_time.toString();
+    for (let i = 0; i < ALARM_COUNT; i++) {
+        if (reset || timeout_id[i] == null) {
+            if (settings["timer_active_" + i] && settings["zone_" + i]) {
+                const action = settings["wake_action_" + i];
+                const wake_day = settings["wake_day_" + i];
+                const fade_time = (settings["transition_type_" + i] == TRANS_FADING ?
+                                   +settings["transition_time_" + i] : 0);
+                let date = new Date(now);
 
-        svc_status.set_status(alarm_string, false);
-    } else {
-        // Update status
-        svc_status.set_status("No active Alarms", false);
+                // Configuration is already validated at this point, get processed fields
+                let valid_time = validate_time_string(settings["wake_time_" + i], wake_day == ONCE);
+
+                date.setSeconds(0);
+                date.setMilliseconds(0);
+
+                let timeout_time = date.getTime();
+
+                if (valid_time.relative) {
+                    timeout_time += (valid_time.hours * 60 + valid_time.minutes) * 60 * 1000;
+                } else {
+                    let tz_offset = date.getTimezoneOffset();
+                    let day = date.getDay();
+                    let days_to_skip = 0;
+
+                    date.setHours(valid_time.hours);
+                    date.setMinutes(valid_time.minutes);
+                    timeout_time = date.getTime();
+
+                    if (fade_time && action == ACTION_PLAY) {
+                        // Subtract fade time to reach the configured volume at the configured time
+                        timeout_time -= fade_time * 60 * 1000;
+                    }
+
+                    if (wake_day < 7) {
+                        days_to_skip = (wake_day + 7 - day) % 7;
+                    }
+
+                    if (days_to_skip == 0 && timeout_time < Date.now()) {
+                        // Time has passed for today
+                        if (wake_day < 7) {
+                            // Next week
+                            days_to_skip = 7;
+                        } else {
+                            // Tomorrow
+                            days_to_skip = 1;
+                            day = (day + 1) % 7;
+                        }
+                    }
+
+                    if (wake_day == MON_FRI) {
+                        switch (day) {
+                            case SUN:
+                                // Sunday
+                                days_to_skip += 1;
+                                break;
+                            case SAT:
+                                // Saterday
+                                days_to_skip += 2;
+                                break;
+                        }
+                    } else if (wake_day == WEEKEND && day > SUN && day < SAT) {
+                        days_to_skip += SAT - day;
+                    }
+
+                    timeout_time += days_to_skip * 24 * 60 * 60 * 1000;
+                    date = new Date(timeout_time);
+                    tz_offset -= date.getTimezoneOffset();
+
+                    if (tz_offset) {
+                        timeout_time -= tz_offset * 60 * 1000;
+                    }
+                }
+                let action_string = settings["zone_" + i].name + ": ";
+                action_string += get_action_string(action);
+
+                add_pending_alarm( { timeout: timeout_time, action: action_string } );
+
+                timeout_time -= Date.now();
+
+                if (timeout_id[i] != null) {
+                    // Clear pending timeout
+                    clearTimeout(timeout_id[i]);
+                }
+
+                timeout_id[i] = setTimeout(timer_timed_out, timeout_time, i);
+            } else if (timeout_id[i] != null) {
+                // Clear pending timeout
+                clearTimeout(timeout_id[i]);
+                timeout_id[i] = null;
+            }
+        }
     }
+
+    // Update status
+    svc_status.set_status(get_pending_alarms_string(), false);
 }
 
 function timer_timed_out(index) {
@@ -645,23 +737,48 @@ function timer_timed_out(index) {
 
         if (zone) {
             const action = settings["wake_action_" + index];
+            let postponed = false;
 
-            if (action == ACTION_PLAY && zone.state != 'playing' &&
-                !zone.is_play_allowed && zone.is_previous_allowed) {
+            if (zone.state == 'playing') {
+                const trans_time = (settings["transition_type_" + index] == TRANS_TRACKBOUND ?
+                                    +settings["transition_time_" + index] * 60 : 0);
+                const now_playing = zone.now_playing;
+
+                if (trans_time > 0 && now_playing && (action == ACTION_STOP || action == ACTION_STANDBY)) {
+                    const length = now_playing.length;
+                    const properties = {
+                        now_playing:     { seek_position: 0 },
+                        state:           'stopped',
+                        is_play_allowed: true
+                    };
+
+                    if (length && (length - now_playing.seek_position < trans_time)) {
+                        on_zone_property_changed(zone.zone_id, properties, function(zone) {
+                            control(settings, zone, output, index);
+                        });
+
+                        postponed = true;
+                    }
+                }
+            } else if (action == ACTION_PLAY && !zone.is_play_allowed && zone.is_previous_allowed) {
                 // Start off with previous track
                 transport.control(output, 'previous', function(error) {
                     if (!error) {
-                        wait_for_zone_flag(zone.zone_id, { is_play_allowed: true }, function(zone) {
+                        on_zone_property_changed(zone.zone_id, { is_play_allowed: true }, function(zone) {
                             control(settings, zone, output, index);
+
+                            // Turn radio function on to keep the music going
+                            transport.change_settings(zone, { auto_radio: true });
                         });
                     }
                 });
 
-                // Turn radio function on to keep the music going
-                transport.change_settings(zone, { auto_radio: true });
+                postponed = true;
             }
 
-            control(settings, zone, output, index);
+            if (!postponed) {
+                control(settings, zone, output, index);
+            }
         }
     }
 
@@ -679,16 +796,17 @@ function timer_timed_out(index) {
         roon.save_config("settings", settings);
     }
 
-    set_timer();
+    set_timer(false);
 }
 
 function control(settings, zone, output, index) {
-    const fade_time = +settings["fade_time_" + index];
+    const fade_time = (settings["transition_type_" + index] == TRANS_FADING ?
+                       +settings["transition_time_" + index] : 0);
     const current_volume = get_current_volume(zone, output.output_id);
     let end_volume = settings["wake_volume_" + index];
     let action = settings["wake_action_" + index];
 
-    if (current_volume && action != ACTION_TRANSFER && fade_time > 0) {
+    if (fade_time > 0 && current_volume && action != ACTION_TRANSFER) {
         // Take care of fading
         let start_volume;
 
@@ -733,23 +851,23 @@ function control(settings, zone, output, index) {
             }
             break;
         case ACTION_STOP:
-        case ACTION_STANDBY:
             if (zone.state == 'playing') {
                 transport.control(output, zone.is_pause_allowed ? 'pause' : 'stop');
             }
+            break;
+        case ACTION_STANDBY:
+            transport.standby(output, {}, function(error) {
+                if (error) {
+                    console.log("Output doesn't support standby");
 
-            if (action == ACTION_STANDBY) {
-                wait_for_zone_flag(zone.zone_id, { is_play_allowed: true }, function(zone) {
-                    transport.standby(output, {}, function(error) {
-                        if (error) {
-                            console.log("Output doesn't support standby");
-                        }
-                    });
-                });
-            }
+                    if (zone.state == 'playing') {
+                        transport.control(output, zone.is_pause_allowed ? 'pause' : 'stop');
+                    }
+                }
+            });
             break;
         case ACTION_TRANSFER:
-            let transfer_zone = settings["transfer_zone_" + index];
+            const transfer_zone = settings["transfer_zone_" + index];
 
             // Set volume for the zone we transfer to
             transport.change_volume(transfer_zone, "absolute", end_volume);
@@ -798,7 +916,7 @@ function take_fade_step(index, start_volume, end_volume) {
             // Stop playback
             transport.control(output, zone.is_pause_allowed ? 'pause' : 'stop');
 
-            wait_for_zone_flag(zone.zone_id, { is_play_allowed: true }, function(zone) {
+            on_zone_property_changed(zone.zone_id, { is_play_allowed: true }, function(zone) {
                 // Restore start volume
                 transport.change_volume(output, "absolute", start_volume, function(error) {
                     if (!error && action == ACTION_STANDBY) {
@@ -826,7 +944,7 @@ function init() {
         roon.save_config("settings", wake_settings);
     }
 
-    set_timer();
+    set_timer(true);
 }
 
 var svc_settings = new RoonApiSettings(roon, {
@@ -842,7 +960,7 @@ var svc_settings = new RoonApiSettings(roon, {
             svc_settings.update_settings(l);
             roon.save_config("settings", wake_settings);
 
-            set_timer();
+            set_timer(true);
         }
     }
 });

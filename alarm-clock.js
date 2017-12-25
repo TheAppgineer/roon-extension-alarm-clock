@@ -17,7 +17,8 @@
 var RoonApi          = require("node-roon-api"),
     RoonApiSettings  = require('node-roon-api-settings'),
     RoonApiStatus    = require('node-roon-api-status'),
-    RoonApiTransport = require('node-roon-api-transport');
+    RoonApiTransport = require('node-roon-api-transport'),
+    ApiTimeInput     = require('node-api-time-input');
 
 const EXPECTED_CONFIG_REV = 2;
 const ALARM_COUNT = 5;
@@ -52,13 +53,15 @@ var timeout_id = [];
 var interval_id = [];
 var fade_volume = [];
 
+var timer = new ApiTimeInput();
+
 var roon = new RoonApi({
     extension_id:        'com.theappgineer.alarm-clock',
     display_name:        'Alarm Clock',
-    display_version:     '0.5.0',
+    display_version:     '0.5.1',
     publisher:           'The Appgineer',
     email:               'theappgineer@gmail.com',
-    website:             'https://github.com/TheAppgineer/roon-extension-alarm-clock',
+    website:             'https://community.roonlabs.com/t/roon-extension-alarm-clock/21556',
 
     core_paired: function(core_) {
         core = core_;
@@ -200,17 +203,17 @@ function makelayout(settings) {
             type:    "dropdown",
             title:   "Day(s)",
             values:  [
-                { title: "Once",               value: ONCE    },
-                { title: "Daily",              value: DAILY   },
-                { title: "Monday till Friday", value: MON_FRI },
-                { title: "Weekend",            value: WEEKEND },
-                { title: "Sunday",             value: SUN },
-                { title: "Monday",             value: MON },
-                { title: "Tuesday",            value: TUE },
-                { title: "Wednesday",          value: WED },
-                { title: "Thursday",           value: THU },
-                { title: "Friday",             value: FRI },
-                { title: "Saturday",           value: SAT }
+                { title: "Once",      value: ONCE    },
+                { title: "Daily",     value: DAILY   },
+                { title: "Weekdays",  value: MON_FRI },
+                { title: "Weekend",   value: WEEKEND },
+                { title: "Sunday",    value: SUN     },
+                { title: "Monday",    value: MON     },
+                { title: "Tuesday",   value: TUE     },
+                { title: "Wednesday", value: WED     },
+                { title: "Thursday",  value: THU     },
+                { title: "Friday",    value: FRI     },
+                { title: "Saturday",  value: SAT     }
             ],
             setting: "wake_day_" + i
         };
@@ -233,7 +236,7 @@ function makelayout(settings) {
             v.title += " (use '+' for relative alarm)";
         }
 
-        let valid_time = validate_time_string(settings["wake_time_" + i], allow_rel_timer);
+        let valid_time = timer.validate_time_string(settings["wake_time_" + i], allow_rel_timer);
 
         if (valid_time) {
             settings["wake_time_" + i] = valid_time.friendly;
@@ -304,7 +307,7 @@ function makelayout(settings) {
                     type:    "integer",
                     min:     0,
                     max:     30,
-                    title:   "Transition Time",
+                    title:   "Transition Time [min]",
                     setting: "transition_time_" + i
                 };
                 let trans_time = settings["transition_time_" + i];
@@ -345,7 +348,7 @@ function set_defaults(settings, index, force) {
         settings["wake_time_"       + index] = "07:00";
         settings["wake_volume_"     + index] = null;
         settings["transition_type_" + index] = TRANS_INSTANT;
-        settings["transition_time_" + index] = "0";
+        settings["transition_time_" + index] = "3";
         settings["transfer_zone_"   + index] = null;
         settings["repeat_"          + index] = false;
 
@@ -404,22 +407,22 @@ function get_alarm_title(settings, index) {
     const active = settings["timer_active_" + index];
     const zone = settings["zone_" + index];
     const day = settings["wake_day_" + index];
-    let valid_time = validate_time_string(settings["wake_time_" + index], day == ONCE);
+    let valid_time = timer.validate_time_string(settings["wake_time_" + index], day == ONCE);
     let title;
 
     if (active && zone && valid_time) {
         const day_string = [
-            " on Sunday",               // SUN
-            " on Monday",               // MON
-            " on Tueday",               // TUE
-            " on Wednesday",            // WED
-            " on Thursday",             // THU
-            " on Friday",               // FRI
-            " on Saturday",             // SAT
-            "",                         // ONCE
-            " daily",                   // DAILY
-            " on Monday till Friday",   // MON_FRI
-            " in weekend"               // WEEKEND
+            " on Sunday",     // SUN
+            " on Monday",     // MON
+            " on Tueday",     // TUE
+            " on Wednesday",  // WED
+            " on Thursday",   // THU
+            " on Friday",     // FRI
+            " on Saturday",   // SAT
+            "",               // ONCE
+            " daily",         // DAILY
+            " on weekdays",   // MON_FRI
+            " on the weekend" // WEEKEND
         ];
         const action = settings["wake_action_" + index];
         const transfer_zone = settings["transfer_zone_" + index];
@@ -432,7 +435,7 @@ function get_alarm_title(settings, index) {
                 case DAILY:
                     break;
                 case MON_FRI:
-                    repeat_string = " (weekly)";
+                    repeat_string = " (every week)";
                     break;
                 default:
                     repeat_string = "s";    // Append 's' to day
@@ -514,87 +517,6 @@ function get_pending_alarms_string() {
     return alarm_string;
 }
 
-function validate_time_string(time_string, allow_relative) {
-    let relative = (time_string.charAt(0) == "+");
-
-    if (relative && !allow_relative) {
-        return null;
-    }
-
-    let valid_time_string = time_string.substring(relative);
-    let separator_index = valid_time_string.indexOf(":");
-    let hours = "0";
-
-    // Extract hours
-    if (separator_index == 1 || separator_index == 2 ) {
-        hours = valid_time_string.substring(0, separator_index);
-    } else if (relative) {
-        // Outside expected range, no hours specified
-        separator_index = -1;
-    } else {
-        return null;
-    }
-
-    // Extract minutes
-    let minutes = valid_time_string.substring(separator_index + 1, separator_index + 3);
-
-    // Check ranges
-    if (isNaN(hours) || hours < 0 || hours > 23) {
-        return null;
-    }
-
-    if (isNaN(minutes) || minutes < 0 || minutes > 59) {
-        return null;
-    }
-
-    // Extract 24h/12h clock type
-    let is_am = false;
-    let is_pm = false;
-    let am_pm = "";
-
-    if (!relative) {
-        let am_pm_index = separator_index + 1 + minutes.length;
-        am_pm = valid_time_string.substring(am_pm_index, am_pm_index + 2);
-        is_am = (am_pm.toLowerCase() == "am");
-        is_pm = (am_pm.toLowerCase() == "pm");
-
-        // Check hour range
-        if (is_am || is_pm) {
-            if (hours < 1 || hours > 12) {
-                return null;
-            }
-        }
-    }
-
-    if (hours.length == 1) {
-        hours = "0" + hours;
-    }
-
-    if (minutes.length == 1) {
-        minutes = "0" + minutes;
-    }
-
-    // Create human readable string
-    let friendly = (relative ? "+" : "") + hours + ":" + minutes;
-    if (is_am || is_pm) {
-        friendly += am_pm;
-    }
-
-    // Convert to 24h clock type
-    if (is_am && hours == 12) {
-        hours -= 12;
-    } else if (is_pm && hours < 12) {
-        hours = +hours + 12;
-    }
-
-    return {
-        relative: relative,
-        hours:    +hours,
-        minutes:  +minutes,
-        friendly: friendly
-    };
-}
-
 function get_current_volume_by_output_id(output_id) {
     return get_current_volume(transport.zone_by_output_id(output_id), output_id);
 }
@@ -614,7 +536,7 @@ function get_current_volume(zone, output_id) {
 }
 
 function set_timer(reset) {
-    const now = new Date();
+    const now = Date.now();
     let settings = wake_settings;
 
     if (reset) {
@@ -622,7 +544,7 @@ function set_timer(reset) {
     } else {
         // Remove expired alarms
         for (let i = pending_alarms.length - 1; i >= 0; i--) {
-            if (pending_alarms[i].timeout <= now.getTime()) {
+            if (pending_alarms[i].timeout <= now) {
                 pending_alarms.splice(0, i + 1);
                 break;
             }
@@ -639,7 +561,7 @@ function set_timer(reset) {
                 let date = new Date(now);
 
                 // Configuration is already validated at this point, get processed fields
-                let valid_time = validate_time_string(settings["wake_time_" + i], wake_day == ONCE);
+                const valid_time = timer.validate_time_string(settings["wake_time_" + i], wake_day == ONCE);
 
                 date.setSeconds(0);
                 date.setMilliseconds(0);
@@ -666,7 +588,7 @@ function set_timer(reset) {
                         days_to_skip = (wake_day + 7 - day) % 7;
                     }
 
-                    if (days_to_skip == 0 && timeout_time < Date.now()) {
+                    if (days_to_skip == 0 && timeout_time < now) {
                         // Time has passed for today
                         if (wake_day < 7) {
                             // Next week
@@ -706,7 +628,7 @@ function set_timer(reset) {
 
                 add_pending_alarm( { timeout: timeout_time, action: action_string } );
 
-                timeout_time -= Date.now();
+                timeout_time -= now;
 
                 if (timeout_id[i] != null) {
                     // Clear pending timeout

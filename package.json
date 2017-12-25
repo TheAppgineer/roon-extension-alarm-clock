@@ -1,6 +1,6 @@
 {
     "name": "roon-extension-alarm-clock",
-    "version": "0.5.0",
+    "version": "0.5.1",
     "description": "Roon Extension to start or stop playback on a specific zone at a specific time",
     "main": "alarm-clock.js",
     "author": "The Appgineer",
@@ -9,6 +9,11 @@
         "node-roon-api": "github:roonlabs/node-roon-api",
         "node-roon-api-settings": "github:roonlabs/node-roon-api-settings",
         "node-roon-api-status": "github:roonlabs/node-roon-api-status",
-        "node-roon-api-transport": "github:roonlabs/node-roon-api-transport"
+        "node-roon-api-transport": "github:roonlabs/node-roon-api-transport",
+        "node-api-time-input": "github:TheAppgineer/node-api-time-input"
+    },
+    "repository": {
+        "type": "git",
+        "url": "https://github.com/TheAppgineer/roon-extension-alarm-clock.git"
     }
 }

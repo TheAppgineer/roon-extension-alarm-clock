@@ -20,8 +20,8 @@ var RoonApi          = require("node-roon-api"),
     RoonApiTransport = require('node-roon-api-transport'),
     ApiTimeInput     = require('node-api-time-input');
 
-const EXPECTED_CONFIG_REV = 2;
-const ALARM_COUNT = 5;
+const EXPECTED_CONFIG_REV = 3;
+const MAX_ALARM_COUNT = 10;
 
 const ACTION_NONE = -1;
 const ACTION_STOP = 0;
@@ -58,7 +58,7 @@ var timer = new ApiTimeInput();
 var roon = new RoonApi({
     extension_id:        'com.theappgineer.alarm-clock',
     display_name:        'Alarm Clock',
-    display_version:     '0.5.1',
+    display_version:     '0.6.0',
     publisher:           'The Appgineer',
     email:               'theappgineer@gmail.com',
     website:             'https://community.roonlabs.com/t/roon-extension-alarm-clock/21556',
@@ -122,7 +122,8 @@ var roon = new RoonApi({
 });
 
 var wake_settings = roon.load_config("settings") || {
-    selected_timer: 0
+    selected_timer: 0,
+    alarm_count: 1
 };
 
 function on_zone_property_changed(zone_id, properties, cb) {
@@ -141,13 +142,28 @@ function makelayout(settings) {
         values:  [],
         setting: "selected_timer"
     };
+    let used_alarms = 0;
 
-    for (let i = 0; i < ALARM_COUNT; i++) {
+    for (let i = 0; i < settings.alarm_count; i++) {
         selector.values.push({
             title: get_alarm_title(settings, i),
             value: i
         });
+
+        if (settings["zone_" + i]) {
+            used_alarms++;
+        }
     }
+
+    if (used_alarms == settings.alarm_count && used_alarms < MAX_ALARM_COUNT) {
+        set_defaults(settings, settings.alarm_count++);
+
+        selector.values.push({
+            title: get_alarm_title(settings, used_alarms),
+            value: used_alarms
+        });
+    }
+
     l.layout.push(selector);
 
     let i = settings.selected_timer;
@@ -361,8 +377,15 @@ function set_defaults(settings, index, force) {
 function validate_config(settings) {
     const config_rev = settings["config_rev"];
     let corrected = false;
+    let alarm_count;
 
-    for (let i = 0; i < ALARM_COUNT; i++) {
+    if (config_rev <= 2) {
+        alarm_count = 5;
+    } else {
+        alarm_count = settings.alarm_count;
+    }
+
+    for (let i = alarm_count - 1; i >= 0; i--) {
         if ((corrected = set_defaults(settings, i)) == false) {
             // Check for configuration updates
             switch (config_rev) {
@@ -387,6 +410,20 @@ function validate_config(settings) {
 
                     corrected = true;
                     break;
+                case 2:
+                    // Convert the fixed alarm count to the dynamic variant
+                    if (settings.alarm_count == undefined) {
+                        if (settings["zone_" + i] == null) {
+                            // Remove never used alarms
+                            alarm_count--;
+                        } else {
+                            // We found the last alarm that had been used, set alarm count to 'used + 1'
+                            settings.alarm_count = alarm_count + 1;
+                        }
+                    }
+
+                    corrected = true;
+                    break;
                 case EXPECTED_CONFIG_REV:
                     // This is the expected configuration revision
                     break;
@@ -398,7 +435,11 @@ function validate_config(settings) {
         }
     }
 
-    settings["config_rev"] = EXPECTED_CONFIG_REV;
+    if (settings.alarm_count == undefined) {
+        settings.alarm_count = alarm_count + 1;
+    }
+
+    settings.config_rev = EXPECTED_CONFIG_REV;
 
     return corrected;
 }
@@ -551,7 +592,7 @@ function set_timer(reset) {
         }
     }
 
-    for (let i = 0; i < ALARM_COUNT; i++) {
+    for (let i = 0; i < settings.alarm_count; i++) {
         if (reset || timeout_id[i] == null) {
             if (settings["timer_active_" + i] && settings["zone_" + i]) {
                 const action = settings["wake_action_" + i];
@@ -856,7 +897,7 @@ function take_fade_step(index, start_volume, end_volume) {
 }
 
 function init() {
-    for (let i = 0; i < ALARM_COUNT; i++) {
+    for (let i = 0; i < wake_settings.alarm_count; i++) {
         timeout_id.push(null);
         interval_id.push(null);
         fade_volume.push(null);

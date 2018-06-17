@@ -3,8 +3,14 @@
 Roon Extension to start or stop playback on a specific zone at a specific time.
 
 ------------
+## Roon Extension Manager
+The recommended way to install or update is via the [Roon Extension Manager](https://github.com/TheAppgineer/roon-extension-manager/wiki/Installation).
 
-## Installation
+Install by opening the Settings dialog, select the Alarm Clock from the Playback category and perform the Install action.
+
+If the manager has auto update enabled then changes will be pulled in the next time the update is performed. It is also possible to update manually via the Settings dialog, select the Alarm Clock from the Playback category and perform the Update action.
+
+## Manual Installation
 
 1. Install Node.js from https://nodejs.org.
 

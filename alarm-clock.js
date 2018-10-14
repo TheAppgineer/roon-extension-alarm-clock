@@ -1,4 +1,4 @@
-// Copyright 2017 The Appgineer
+// Copyright 2017, 2018 The Appgineer
 //
 // Licensed under the Apache License, Version 2.0 (the "License");
 // you may not use this file except in compliance with the License.
@@ -58,7 +58,7 @@ var timer = new ApiTimeInput();
 var roon = new RoonApi({
     extension_id:        'com.theappgineer.alarm-clock',
     display_name:        'Alarm Clock',
-    display_version:     '0.6.0',
+    display_version:     '0.0.0',
     publisher:           'The Appgineer',
     email:               'theappgineer@gmail.com',
     website:             'https://community.roonlabs.com/t/roon-extension-alarm-clock/21556',
@@ -694,6 +694,8 @@ function timer_timed_out(index) {
 
     timeout_id[index] = null;
 
+    log("Alarm " + index + " expired");
+
     if (core) {
         const output = settings["zone_" + index];
         let zone = transport.zone_by_output_id(output.output_id);
@@ -790,11 +792,11 @@ function control(settings, zone, output, index) {
                 clearInterval(interval_id[index]);
             }
 
-            interval_id[index] = setInterval(take_fade_step, ms_per_step,
-                                                index, start_volume, end_volume);
+            interval_id[index] = setInterval(take_fade_step, ms_per_step, index, start_volume, end_volume);
 
-            if (zone.state == 'playing' &&
-                (action == ACTION_STANDBY || action == ACTION_STOP)) {
+            log("Fading activated");
+
+            if (zone.state == 'playing' && (action == ACTION_STANDBY || action == ACTION_STOP)) {
                 // Remain playing during fade out
                 action = ACTION_NONE;
             }
@@ -806,8 +808,10 @@ function control(settings, zone, output, index) {
 
     switch (action) {
         case ACTION_PLAY:
-            // Set wake volume, even if already playing
-            transport.change_volume(output, "absolute", end_volume);
+            if (current_volume) {
+                // Set wake volume, even if already playing
+                transport.change_volume(output, "absolute", end_volume);
+            }
 
             if (zone.state != 'playing') {
                 transport.control(output, 'play');
@@ -816,12 +820,14 @@ function control(settings, zone, output, index) {
         case ACTION_STOP:
             if (zone.state == 'playing') {
                 transport.control(output, zone.is_pause_allowed ? 'pause' : 'stop');
+            } else {
+                log("Playback already stopped");
             }
             break;
         case ACTION_STANDBY:
             transport.standby(output, {}, function(error) {
                 if (error) {
-                    console.log("Output doesn't support standby");
+                    log("Output doesn't support standby");
 
                     if (zone.state == 'playing') {
                         transport.control(output, zone.is_pause_allowed ? 'pause' : 'stop');
@@ -832,8 +838,10 @@ function control(settings, zone, output, index) {
         case ACTION_TRANSFER:
             const transfer_zone = settings["transfer_zone_" + index];
 
-            // Set volume for the zone we transfer to
-            transport.change_volume(transfer_zone, "absolute", end_volume);
+            if (current_volume) {
+                // Set volume for the zone we transfer to
+                transport.change_volume(transfer_zone, "absolute", end_volume);
+            }
             transport.transfer_zone(output, transfer_zone);
             break;
         case ACTION_NONE:
@@ -853,7 +861,7 @@ function take_fade_step(index, start_volume, end_volume) {
         // Somebody else is turning the knob as well, hands off
         clearInterval(interval_id[index]);
         interval_id[index] = null;
-        console.log("Fading terminated for alarm " + (index + 1));
+        log("Fading terminated for alarm " + (index + 1));
     } else if (zone.state != 'playing') {
         // Postpone fading in case data is still loading
         if (zone.state != 'loading') {
@@ -886,13 +894,23 @@ function take_fade_step(index, start_volume, end_volume) {
                         // Switch to standby
                         transport.standby(output, {}, function(error) {
                             if (error) {
-                                console.log("Output doesn't support standby");
+                                log("Output doesn't support standby");
                             }
                         });
                     }
                 });
             });
         }
+    }
+}
+
+function log(message, is_error) {
+    const date = new Date();
+
+    if (is_error) {
+        console.error(date.toISOString(), '- Err:', message);
+    } else {
+        console.log(date.toISOString(), '- Inf:', message);
     }
 }
 

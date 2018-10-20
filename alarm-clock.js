@@ -18,9 +18,10 @@ var RoonApi          = require("node-roon-api"),
     RoonApiSettings  = require('node-roon-api-settings'),
     RoonApiStatus    = require('node-roon-api-status'),
     RoonApiTransport = require('node-roon-api-transport'),
+    RoonApiBrowse    = require('node-roon-api-browse'),
     ApiTimeInput     = require('node-api-time-input');
 
-const EXPECTED_CONFIG_REV = 3;
+const EXPECTED_CONFIG_REV = 4;
 const MAX_ALARM_COUNT = 20;
 
 const ACTION_NONE = -1;
@@ -45,6 +46,14 @@ const TRANS_INSTANT    = 0;
 const TRANS_FADING     = 1;
 const TRANS_TRACKBOUND = 2;
 
+const SRC_QUEUE          = 0;
+const SRC_GENRE          = 1;
+const SRC_PLAYLIST       = 2;
+const SRC_INTERNET_RADIO = 3;
+
+const source_strings = ['', 'Genres', 'Playlists', 'Internet Radio'];
+const activation_strings = [[], ['Play Genre', 'Shuffle'], ['Play Playlist', 'Shuffle'], []];
+
 var core = undefined;
 var transport = undefined;
 var waiting_zones = {};
@@ -52,6 +61,11 @@ var pending_alarms = [];
 var timeout_id = [];
 var interval_id = [];
 var fade_volume = [];
+var source_entry_list = [];
+var queried_profile;
+var queried_source_type;
+var profiles = [];
+var active_profile;
 
 var timer = new ApiTimeInput();
 
@@ -73,6 +87,7 @@ var roon = new RoonApi({
             if (response == "Subscribed") {
                 zones = msg.zones;
 
+                select_profile(wake_settings);
                 set_timer(true);
             } else if (response == "Changed") {
                 if (msg.zones_changed) {
@@ -129,7 +144,8 @@ var roon = new RoonApi({
 
 var wake_settings = roon.load_config("settings") || {
     selected_timer: 0,
-    alarm_count: 1
+    alarm_count:    1,
+    profile:        null
 };
 
 function on_zone_property_changed(zone_id, properties, cb) {
@@ -137,7 +153,7 @@ function on_zone_property_changed(zone_id, properties, cb) {
 }
 
 function makelayout(settings) {
-    var l = {
+    let l = {
         values:    settings,
         layout:    [],
         has_error: false
@@ -170,9 +186,18 @@ function makelayout(settings) {
         });
     }
 
+    if (profiles.length > 1) {
+        l.layout.push({
+            type:    "dropdown",
+            title:   "Profile",
+            values:  profiles,
+            setting: "profile"
+        });
+    }
+
     l.layout.push(selector);
 
-    let i = settings.selected_timer;
+    const i = settings.selected_timer;
     let alarm = {
         type:        "group",
         items:       []
@@ -328,6 +353,30 @@ function makelayout(settings) {
             event.items.push(v);
         }
 
+        if (action == ACTION_PLAY) {
+            const source_type = {
+                type:    "dropdown",
+                title:   "Source",
+                values:  [
+                    { title: "Queue (DIY)",    value: SRC_QUEUE          },
+                    { title: "Genre",          value: SRC_GENRE          },
+                    { title: "Playlist",       value: SRC_PLAYLIST       },
+                    { title: "Internet Radio", value: SRC_INTERNET_RADIO }
+                ],
+                setting: "source_type_" + i
+            };
+            event.items.push(source_type);
+
+            if (settings["source_type_" + i] != SRC_QUEUE) {
+                event.items.push({
+                    type:    "dropdown",
+                    title:   source_type.values[settings["source_type_" + i]].title,
+                    values:  source_entry_list,
+                    setting: "source_entry_" + i
+                });
+            }
+        }
+
         const trans_time = settings["transition_time_" + i];
         let transition_type = {
             type:    "dropdown",
@@ -408,6 +457,8 @@ function set_defaults(settings, index, force) {
         settings["transition_time_" + index] = "3";
         settings["transfer_zone_"   + index] = null;
         settings["repeat_"          + index] = false;
+        settings["source_type_"     + index] = SRC_QUEUE;
+        settings["source_entry_"    + index] = null;
 
         return true;
     }
@@ -436,8 +487,8 @@ function validate_config(settings) {
                                       ":" + settings["wake_time_minutes_" + i];
 
                     settings["wake_time_" + i] = wake_time;
-                    corrected = true;
-                    break;
+
+                    // Fall through
                 case 1:
                     const fade_time = settings["fade_time_" + i];
 
@@ -449,8 +500,7 @@ function validate_config(settings) {
                     delete settings["wake_time_minutes_" + i];
                     delete settings["fade_time_" + i];
 
-                    corrected = true;
-                    break;
+                    // Fall through
                 case 2:
                     // Convert the fixed alarm count to the dynamic variant
                     if (settings.alarm_count == undefined) {
@@ -462,6 +512,16 @@ function validate_config(settings) {
                             settings.alarm_count = alarm_count + 1;
                         }
                     }
+
+                    // Fall through
+                case 3:
+                    if (settings.profile === undefined) {
+                        settings["profile"] = null;
+                    }
+
+                    settings["source_type_"  + i] = SRC_QUEUE;
+                    settings["source_type_"  + i] = SRC_QUEUE;
+                    settings["source_entry_" + i] = null;
 
                     corrected = true;
                     break;
@@ -751,14 +811,34 @@ function timer_timed_out(index) {
 
         if (zone) {
             const action = settings["wake_action_" + index];
+            const source_type = settings["source_type_" + index];
+            const source_entry = settings["source_entry_" + index];
             let postponed = false;
 
-            if (zone.state == 'playing') {
+            if (action == ACTION_PLAY && source_type != SRC_QUEUE && source_entry) {
+                // Activate selected profile
+                select_profile(wake_settings, () => {
+                    // Activate selected source
+                    const path = [source_strings[source_type], source_entry]
+                                 .concat(activation_strings[source_type]);
+
+                    log(path);
+
+                    refresh_browse({ pop_all: true }, path, (item, done) => {
+                        refresh_browse({
+                            hierarchy:         "browse",
+                            zone_or_output_id: zone.zone_id,
+                            item_key:          item.item_key
+                        });
+                    });
+                });
+            } else if (zone.state == 'playing') {
                 const trans_time = (settings["transition_type_" + index] == TRANS_TRACKBOUND ?
                                     +settings["transition_time_" + index] * 60 : 0);
                 const now_playing = zone.now_playing;
 
                 if (trans_time > 0 && now_playing && (action == ACTION_STOP || action == ACTION_STANDBY)) {
+                    // Make transition at track boundary
                     const length = now_playing.length;
                     const properties = {
                         now_playing:     { seek_position: 0 },
@@ -953,6 +1033,125 @@ function take_fade_step(index, start_volume, end_volume) {
     }
 }
 
+function query_dropdowns(settings, cb) {
+    query_profiles(settings, () => {
+        query_entries(settings, () => {
+            cb && cb();
+        });
+    });
+}
+
+function query_profiles(settings, cb) {
+    const profile = settings["profile"];
+
+    profiles = [];      // Start off with an empty list
+
+    refresh_browse({ pop_all: true }, [ 'Settings', 'Profile', '' ], (item, done) => {
+        profiles.push({ title: item.title, value: item.title });
+
+        if (item.subtitle == "selected") {
+            active_profile = item.title;
+        }
+
+        if (done && cb) {
+            cb();
+        }
+    });
+}
+
+function query_entries(settings, cb) {
+    const source = settings["source_type_" + settings.selected_timer];
+    const force = (settings.profile != queried_profile);
+
+    if (source && (force || source !== queried_source_type)) {
+        const path = [source_strings[source], ''];
+        let values = [];
+
+        queried_profile = settings.profile;
+        queried_source_type = source;
+
+        refresh_browse({ pop_all: true }, path, (item, done) => {
+            if (item) {
+                values.push({ title: item.title, value: item.title });
+            }
+
+            if (done) {
+                source_entry_list = values;
+                cb && cb();
+            }
+        });
+    } else if (cb) {
+        cb();
+    }
+}
+
+function select_profile(settings, cb) {
+    if (settings.profile && settings.profile != active_profile) {
+        refresh_browse({ pop_all: true }, [ 'Settings', 'Profile', settings.profile ], (item) => {
+            const source_opts = {
+                hierarchy: "browse",
+                item_key:  item.item_key
+            };
+
+            refresh_browse(source_opts, [], (item, done) => {
+                if (done) {
+                    active_profile = settings.profile;
+                    log("Selected profile: " + settings.profile);
+
+                    cb && cb();
+                }
+            });
+        });
+    } else if (cb) {
+        cb();
+    }
+}
+
+function refresh_browse(opts, path, cb) {
+    opts = Object.assign({ hierarchy: "browse" }, opts);
+
+    core.services.RoonApiBrowse.browse(opts, (err, r) => {
+        if (err == false) {
+            if (r.action == "list") {
+                let list_offset = (r.list.display_offset > 0 ? r.list.display_offset : 0);
+
+                load_browse(list_offset, path, cb);
+            }
+        }
+    });
+}
+
+function load_browse(list_offset, path, cb) {
+    let opts = {
+        hierarchy:          "browse",
+        offset:             list_offset,
+        set_display_offset: list_offset
+    };
+
+    core.services.RoonApiBrowse.load(opts, (err, r) => {
+        if (err == false && path) {
+            if (!r.list.level || !path[r.list.level - 1] || r.list.title == path[r.list.level - 1]) {
+                if (r.items.length) {
+                    for (let i = 0; i < r.items.length; i++) {
+                        let match = (r.items[i].title == path[r.list.level]);
+
+                        if (!path[r.list.level] || match) {
+                            if (r.list.level < path.length - 1) {
+                                refresh_browse({ item_key: r.items[i].item_key }, path, cb);
+                                break;
+                            } else if (cb) {
+                                cb(r.items[i], match || i + 1 == r.items.length);
+                            }
+                        }
+                    }
+                } else if (cb) {
+                    cb(undefined, true);
+                }
+            }
+        }
+    });
+}
+
 function log(message, is_error) {
     const date = new Date();
 
@@ -977,26 +1176,35 @@ function init() {
 
 var svc_settings = new RoonApiSettings(roon, {
     get_settings: function(cb) {
-        cb(makelayout(wake_settings));
+        query_dropdowns(wake_settings, () => {
+            cb(makelayout(wake_settings));
+        });
     },
     save_settings: function(req, isdryrun, settings) {
-        let l = makelayout(settings.values);
-        req.send_complete(l.has_error ? "NotValid" : "Success", { settings: l });
+        select_profile(settings.values, () => {
+            query_entries(settings.values, () => {
+                let l = makelayout(settings.values);
+                req.send_complete(l.has_error ? "NotValid" : "Success", { settings: l });
 
-        if (!isdryrun && !l.has_error) {
-            wake_settings = l.values;
-            svc_settings.update_settings(l);
-            roon.save_config("settings", wake_settings);
+                if (!isdryrun && !l.has_error) {
+                    wake_settings = l.values;
+                    if (!wake_settings.profile) {
+                        wake_settings.profile = active_profile;
+                    }
+                    svc_settings.update_settings(l);
+                    roon.save_config("settings", wake_settings);
 
-            set_timer(true);
-        }
+                    set_timer(true);
+                }
+            });
+        });
     }
 });
 
 var svc_status = new RoonApiStatus(roon);
 
 roon.init_services({
-    required_services:   [ RoonApiTransport ],
+    required_services:   [ RoonApiTransport, RoonApiBrowse ],
     provided_services:   [ svc_settings, svc_status ]
 });
 

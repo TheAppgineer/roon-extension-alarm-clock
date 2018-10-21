@@ -713,7 +713,7 @@ function set_timer(reset) {
                 // Configuration is already validated at this point, get processed fields
                 const valid_time = timer.validate_time_string(settings["wake_time_" + i], wake_day == ONCE);
 
-                date.setSeconds(0);
+                date.setSeconds(i * 2);     // Spread expire time of alarms
                 date.setMilliseconds(0);
 
                 let timeout_time = date.getTime();

@@ -567,9 +567,12 @@ function get_alarm_title(settings, index) {
             " on the weekend" // WEEKEND
         ];
         const action = settings["wake_action_" + index];
+        const source_type = settings["source_type_" + index];
+        const source_entry = settings["source_entry_" + index];
+        const source = (source_type == SRC_QUEUE ? source_strings[source_type] : source_entry);
         const transfer_zone = settings["transfer_zone_" + index];
         let repeat_string = "";
-        let action_string = get_action_string(action);
+        let action_string = get_action_string(action, source);
 
         if (settings["repeat_" + index]) {
             switch (day) {
@@ -608,7 +611,7 @@ function get_alarm_title(settings, index) {
     return title;
 }
 
-function get_action_string(action) {
+function get_action_string(action, source) {
     let action_string = "";
 
     switch (action) {
@@ -619,7 +622,11 @@ function get_action_string(action) {
             action_string = "Stop";
             break;
         case ACTION_PLAY:
-            action_string = "Play";
+            if (source.length > 12) {
+                action_string = 'Play "' + source.slice(0, 9) + '..."';
+            } else {
+                action_string = 'Play "' + source + '"';
+            }
             break;
         case ACTION_TRANSFER:
             action_string = "Transfer";
@@ -648,9 +655,16 @@ function get_pending_alarms_string() {
 
     for (let i = 0; i < pending_alarms.length && i < max_listed; i++) {
         const date_time = new Date(pending_alarms[i].timeout);
+        let time = date_time.toLocaleTimeString();
+
+        if (isNaN(time[time.length - 1]) == false) {
+            time = time.slice(0, -3);
+        } else if (time[time.length - 1] == 'M') {
+            time = time.slice(0, -6) + time.slice(-3);
+        }
 
         alarm_string += "\n" + pending_alarms[i].action + " on " + day[date_time.getDay()];
-        alarm_string += " @ " + date_time.toLocaleTimeString();
+        alarm_string += " @ " + time;
     }
 
     if (alarm_string.length) {
@@ -773,8 +787,11 @@ function set_timer(reset) {
                         timeout_time -= tz_offset * 60 * 1000;
                     }
                 }
+                const source_type = settings["source_type_" + i];
+                const source = (source_type == SRC_QUEUE ? source_strings[source_type]
+                                                         : settings["source_entry_" + i]);
                 let action_string = settings["zone_" + i].name + ": ";
-                action_string += get_action_string(action);
+                action_string += get_action_string(action, source);
 
                 add_pending_alarm( { timeout: timeout_time, action: action_string } );
 

@@ -51,7 +51,7 @@ const SRC_GENRE          = 1;
 const SRC_PLAYLIST       = 2;
 const SRC_INTERNET_RADIO = 3;
 
-const source_strings = ['', 'Genres', 'Playlists', 'Internet Radio'];
+const source_strings = ['Queue', 'Genres', 'Playlists', 'Internet Radio'];
 const activation_strings = [[], ['Play Genre', 'Shuffle'], ['Play Playlist', 'Shuffle'], []];
 
 var core = undefined;
@@ -72,7 +72,7 @@ var timer = new ApiTimeInput();
 var roon = new RoonApi({
     extension_id:        'com.theappgineer.alarm-clock',
     display_name:        'Alarm Clock',
-    display_version:     '0.7.0',
+    display_version:     '0.7.1',
     publisher:           'The Appgineer',
     email:               'theappgineer@gmail.com',
     website:             'https://community.roonlabs.com/t/roon-extension-alarm-clock/21556',
@@ -569,7 +569,7 @@ function get_alarm_title(settings, index) {
         const action = settings["wake_action_" + index];
         const source_type = settings["source_type_" + index];
         const source_entry = settings["source_entry_" + index];
-        const source = (source_type == SRC_QUEUE ? source_strings[source_type] : source_entry);
+        const source = (source_type == SRC_QUEUE ? null : source_entry);
         const transfer_zone = settings["transfer_zone_" + index];
         let repeat_string = "";
         let action_string = get_action_string(action, source);
@@ -622,10 +622,14 @@ function get_action_string(action, source) {
             action_string = "Stop";
             break;
         case ACTION_PLAY:
-            if (source.length > 12) {
-                action_string = 'Play "' + source.slice(0, 9) + '..."';
-            } else {
+            if (source) {
+                if (source.length > 12) {
+                    source = source.slice(0, 9) + '...'
+                }
+
                 action_string = 'Play "' + source + '"';
+            } else {
+                action_string = 'Play ' + source_strings[SRC_QUEUE];
             }
             break;
         case ACTION_TRANSFER:

@@ -1,4 +1,4 @@
-// Copyright 2017 The Appgineer
+// Copyright 2017, 2018 The Appgineer
 //
 // Licensed under the Apache License, Version 2.0 (the "License");
 // you may not use this file except in compliance with the License.
@@ -18,10 +18,11 @@ var RoonApi          = require("node-roon-api"),
     RoonApiSettings  = require('node-roon-api-settings'),
     RoonApiStatus    = require('node-roon-api-status'),
     RoonApiTransport = require('node-roon-api-transport'),
+    RoonApiBrowse    = require('node-roon-api-browse'),
     ApiTimeInput     = require('node-api-time-input');
 
-const EXPECTED_CONFIG_REV = 3;
-const MAX_ALARM_COUNT = 10;
+const EXPECTED_CONFIG_REV = 4;
+const MAX_ALARM_COUNT = 20;
 
 const ACTION_NONE = -1;
 const ACTION_STOP = 0;
@@ -45,6 +46,14 @@ const TRANS_INSTANT    = 0;
 const TRANS_FADING     = 1;
 const TRANS_TRACKBOUND = 2;
 
+const SRC_QUEUE          = 0;
+const SRC_GENRE          = 1;
+const SRC_PLAYLIST       = 2;
+const SRC_INTERNET_RADIO = 3;
+
+const source_strings = ['', 'Genres', 'Playlists', 'Internet Radio'];
+const activation_strings = [[], ['Play Genre', 'Shuffle'], ['Play Playlist', 'Shuffle'], []];
+
 var core = undefined;
 var transport = undefined;
 var waiting_zones = {};
@@ -52,13 +61,18 @@ var pending_alarms = [];
 var timeout_id = [];
 var interval_id = [];
 var fade_volume = [];
+var source_entry_list = [];
+var queried_profile;
+var queried_source_type;
+var profiles = [];
+var active_profile;
 
 var timer = new ApiTimeInput();
 
 var roon = new RoonApi({
     extension_id:        'com.theappgineer.alarm-clock',
     display_name:        'Alarm Clock',
-    display_version:     '0.6.0',
+    display_version:     '0.0.0',
     publisher:           'The Appgineer',
     email:               'theappgineer@gmail.com',
     website:             'https://community.roonlabs.com/t/roon-extension-alarm-clock/21556',
@@ -66,17 +80,24 @@ var roon = new RoonApi({
     core_paired: function(core_) {
         core = core_;
         transport = core.services.RoonApiTransport;
+
         transport.subscribe_zones((response, msg) => {
             let zones = [];
 
             if (response == "Subscribed") {
                 zones = msg.zones;
+
+                select_profile(wake_settings);
+                set_timer(true);
             } else if (response == "Changed") {
                 if (msg.zones_changed) {
                     zones = msg.zones_changed;
                 }
                 if (msg.zones_added) {
                     zones = msg.zones_added;
+                }
+                if (msg.zones_seek_changed) {
+                    zones = msg.zones_seek_changed;
                 }
             }
 
@@ -123,7 +144,8 @@ var roon = new RoonApi({
 
 var wake_settings = roon.load_config("settings") || {
     selected_timer: 0,
-    alarm_count: 1
+    alarm_count:    1,
+    profile:        null
 };
 
 function on_zone_property_changed(zone_id, properties, cb) {
@@ -131,7 +153,7 @@ function on_zone_property_changed(zone_id, properties, cb) {
 }
 
 function makelayout(settings) {
-    var l = {
+    let l = {
         values:    settings,
         layout:    [],
         has_error: false
@@ -164,58 +186,54 @@ function makelayout(settings) {
         });
     }
 
+    if (profiles.length > 1) {
+        l.layout.push({
+            type:    "dropdown",
+            title:   "Profile",
+            values:  profiles,
+            setting: "profile"
+        });
+    }
+
     l.layout.push(selector);
 
-    let i = settings.selected_timer;
-    let group = {
+    const i = settings.selected_timer;
+    let alarm = {
         type:        "group",
-        items:       [],
+        items:       []
     };
-    group.title = selector.values[i].title;
+    let time = {
+        type:        "group",
+        title:       "Time",
+        collapsable: true,
+        items:       []
+    };
+    let place = {
+        type:        "group",
+        title:       "Place",
+        collapsable: true,
+        items:       []
+    };
+    let event = {
+        type:        "group",
+        title:       "Event",
+        collapsable: true,
+        items:       []
+    };
 
-    group.items.push({
+    l.layout.push({
         type:    "dropdown",
-        title:   "Timer",
+        title:   "State",
         values:  [
-            { title: "Disabled", value: false },
-            { title: "Enabled",  value: true  }
+            { title: "Inactive", value: false },
+            { title: "Active",   value: true  }
         ],
         setting: "timer_active_" + i
     });
 
     if (settings["timer_active_" + i]) {
+        // Time
         let v = {
-            type:    "zone",
-            title:   "Zone",
-            setting: "zone_" + i
-        };
-        group.items.push(v);
-
-        let zone = settings["zone_" + i];
-        let current_volume = null;
-
-        if (zone) {
-            // Get volume information from output
-            current_volume = get_current_volume_by_output_id(zone.output_id);
-
-            if (current_volume && settings["wake_volume_" + i] == null) {
-                settings["wake_volume_" + i] = current_volume.max;
-            }
-        }
-
-        group.items.push({
-            type:    "dropdown",
-            title:   "Action",
-            values:  [
-                { title: "Play",     value: ACTION_PLAY     },
-                { title: "Stop",     value: ACTION_STOP     },
-                { title: "Standby",  value: ACTION_STANDBY  },
-                { title: "Transfer", value: ACTION_TRANSFER }
-            ],
-            setting: "wake_action_" + i
-        });
-
-        v = {
             type:    "dropdown",
             title:   "Day(s)",
             values:  [
@@ -233,26 +251,24 @@ function makelayout(settings) {
             ],
             setting: "wake_day_" + i
         };
-        group.items.push(v);
+        time.items.push(v);
 
         v = {
             type:    "string",
-            title:   "Alarm Time",
+            title:   "Time",
             setting: "wake_time_" + i
         };
-        group.items.push(v);
+        time.items.push(v);
 
         const day = settings["wake_day_" + i];
         let allow_rel_timer = 0;
 
         if (day == ONCE) {
-            // 'Once' implies no repeat
-            settings["repeat_" + i] = false;
             allow_rel_timer = 1;
             v.title += " (use '+' for relative alarm)";
         }
 
-        let valid_time = timer.validate_time_string(settings["wake_time_" + i], allow_rel_timer);
+        const valid_time = timer.validate_time_string(settings["wake_time_" + i], allow_rel_timer);
 
         if (valid_time) {
             settings["wake_time_" + i] = valid_time.friendly;
@@ -265,92 +281,166 @@ function makelayout(settings) {
             l.has_error = true;
         }
 
-        let action = settings["wake_action_" + i];
+        v = {
+            type:    "dropdown",
+            title:   "Repeat",
+            values:  [
+                { title: "Disabled", value: false }
+            ],
+            setting: "repeat_" + i
+        };
+        time.items.push(v);
+
+        if (day == ONCE) {
+            // 'Once' implies no repeat
+            settings["repeat_" + i] = false;
+        } else {
+            v.values.push({ title: "Enabled",  value: true });
+        }
+
+        let zone = settings["zone_" + i];
+        let current_volume = null;
+
+        if (zone) {
+            // Get volume information from output
+            current_volume = get_current_volume_by_output_id(zone.output_id);
+
+            if (current_volume && settings["wake_volume_" + i] == null) {
+                settings["wake_volume_" + i] = current_volume.max;
+            }
+        }
+
+        // Place
+        v = {
+            type:    "zone",
+            title:   "Zone",
+            setting: "zone_" + i
+        };
+        place.items.push(v);
+
+        // Event
+        event.items.push({
+            type:    "dropdown",
+            title:   "Action",
+            values:  [
+                { title: "Play",     value: ACTION_PLAY     },
+                { title: "Stop",     value: ACTION_STOP     },
+                { title: "Standby",  value: ACTION_STANDBY  },
+                { title: "Transfer", value: ACTION_TRANSFER }
+            ],
+            setting: "wake_action_" + i
+        });
+
+        const action = settings["wake_action_" + i];
 
         if ((action == ACTION_PLAY || action == ACTION_TRANSFER) && current_volume) {
-            let v = {
+            const volume = settings["wake_volume_" + i];
+
+            v = {
                 type:    "integer",
                 min:     current_volume.min,
                 max:     current_volume.max,
                 title:   "Volume",
                 setting: "wake_volume_" + i
             };
-            let volume = settings["wake_volume_" + i];
             if (current_volume.type == "db") {
                 v.title += " (dB)"
             }
             if (volume < v.min || volume > v.max) {
-                v.error = "Wake Volume must be between " + v.min + " and " + v.max + ".";
+                v.error = "Volume must be between " + v.min + " and " + v.max + ".";
                 l.has_error = true;
             }
-            group.items.push(v);
+            event.items.push(v);
         }
 
-        let transitions = {
+        if (action == ACTION_PLAY) {
+            const source_type = {
+                type:    "dropdown",
+                title:   "Source",
+                values:  [
+                    { title: "Queue (DIY)",    value: SRC_QUEUE          },
+                    { title: "Genre",          value: SRC_GENRE          },
+                    { title: "Playlist",       value: SRC_PLAYLIST       },
+                    { title: "Internet Radio", value: SRC_INTERNET_RADIO }
+                ],
+                setting: "source_type_" + i
+            };
+            event.items.push(source_type);
+
+            if (settings["source_type_" + i] != SRC_QUEUE) {
+                event.items.push({
+                    type:    "dropdown",
+                    title:   source_type.values[settings["source_type_" + i]].title,
+                    values:  source_entry_list,
+                    setting: "source_entry_" + i
+                });
+            }
+        }
+
+        const trans_time = settings["transition_time_" + i];
+        let transition_type = {
             type:    "dropdown",
             title:   "Transition Type",
             values:  [ { title: "Instant", value: TRANS_INSTANT } ],
             setting: "transition_type_" + i
         };
+        let transition_time = {
+            type:    "integer",
+            min:     0,
+            max:     30,
+            title:   "Transition Time [min]",
+            setting: "transition_time_" + i
+        };
 
-        if (action != ACTION_TRANSFER) {
-            if (current_volume) {
-                transitions.values.push({
-                    title: "Fading",
-                    value: TRANS_FADING
-                });
-            }
-            if (action == ACTION_STOP || action == ACTION_STANDBY) {
-                transitions.values.push({
-                    title: "Track Boundary",
-                    value: TRANS_TRACKBOUND
-                });
-            }
-        } else {
+        if (trans_time < transition_time.min || trans_time > transition_time.max) {
+            transition_time.error = "Transition Time must be between " + transition_time.min +
+                                    " and " + transition_time.max + " minutes.";
+            l.has_error = true;
+        }
+
+        if (action == ACTION_TRANSFER) {
             v = {
                 type:    "zone",
                 title:   "Transfer Zone",
                 setting: "transfer_zone_" + i
             };
-            group.items.push(v);
-        }
+            event.items.push(v);
 
-        if (transitions.values.length > 1) {
-            group.items.push(transitions);
+            settings["transition_type_" + i] = TRANS_INSTANT;
+        } else {
+            if (current_volume) {
+                transition_type.values.push({
+                    title: "Fading",
+                    value: TRANS_FADING
+                });
+            } else if (settings["transition_type_" + i] == TRANS_FADING) {
+                settings["transition_type_" + i] = TRANS_INSTANT;
+            }
+
+            if (action == ACTION_STOP || action == ACTION_STANDBY) {
+                transition_type.values.push({
+                    title: "Track Boundary",
+                    value: TRANS_TRACKBOUND
+                });
+            } else if (settings["transition_type_" + i] == TRANS_TRACKBOUND) {
+                settings["transition_type_" + i] = TRANS_INSTANT;
+            }
+
+            event.items.push(transition_type);
 
             if (settings["transition_type_" + i] != TRANS_INSTANT) {
-                v = {
-                    type:    "integer",
-                    min:     0,
-                    max:     30,
-                    title:   "Transition Time [min]",
-                    setting: "transition_time_" + i
-                };
-                let trans_time = settings["transition_time_" + i];
-                if (trans_time < v.min || trans_time > v.max) {
-                    v.error = "Transition Time must be between " + v.min + " and " + v.max + " minutes.";
-                    l.has_error = true;
-                }
-                group.items.push(v);
+                event.items.push(transition_time);
             }
         }
 
-        // Hide repeat for 'Once'
-        if (day != ONCE) {
-            v = {
-                type:    "dropdown",
-                title:   "Repeat",
-                values:  [
-                    { title: "Disabled", value: false },
-                    { title: "Enabled",  value: true  }
-                ],
-                setting: "repeat_" + i
-            };
-            group.items.push(v);
-        }
+        alarm.items.push(time);
+        alarm.items.push(place);
+        alarm.items.push(event);
     }
 
-    l.layout.push(group);
+    alarm.title = selector.values[i].title;
+
+    l.layout.push(alarm);
 
     return l;
 }
@@ -367,6 +457,8 @@ function set_defaults(settings, index, force) {
         settings["transition_time_" + index] = "3";
         settings["transfer_zone_"   + index] = null;
         settings["repeat_"          + index] = false;
+        settings["source_type_"     + index] = SRC_QUEUE;
+        settings["source_entry_"    + index] = null;
 
         return true;
     }
@@ -395,8 +487,8 @@ function validate_config(settings) {
                                       ":" + settings["wake_time_minutes_" + i];
 
                     settings["wake_time_" + i] = wake_time;
-                    corrected = true;
-                    break;
+
+                    // Fall through
                 case 1:
                     const fade_time = settings["fade_time_" + i];
 
@@ -408,8 +500,7 @@ function validate_config(settings) {
                     delete settings["wake_time_minutes_" + i];
                     delete settings["fade_time_" + i];
 
-                    corrected = true;
-                    break;
+                    // Fall through
                 case 2:
                     // Convert the fixed alarm count to the dynamic variant
                     if (settings.alarm_count == undefined) {
@@ -421,6 +512,16 @@ function validate_config(settings) {
                             settings.alarm_count = alarm_count + 1;
                         }
                     }
+
+                    // Fall through
+                case 3:
+                    if (settings.profile === undefined) {
+                        settings["profile"] = null;
+                    }
+
+                    settings["source_type_"  + i] = SRC_QUEUE;
+                    settings["source_type_"  + i] = SRC_QUEUE;
+                    settings["source_entry_" + i] = null;
 
                     corrected = true;
                     break;
@@ -466,9 +567,12 @@ function get_alarm_title(settings, index) {
             " on the weekend" // WEEKEND
         ];
         const action = settings["wake_action_" + index];
+        const source_type = settings["source_type_" + index];
+        const source_entry = settings["source_entry_" + index];
+        const source = (source_type == SRC_QUEUE ? source_strings[source_type] : source_entry);
         const transfer_zone = settings["transfer_zone_" + index];
         let repeat_string = "";
-        let action_string = get_action_string(action);
+        let action_string = get_action_string(action, source);
 
         if (settings["repeat_" + index]) {
             switch (day) {
@@ -486,7 +590,7 @@ function get_alarm_title(settings, index) {
             repeat_string = " (this week)";
         }
 
-        title = zone.name + ": " + action_string + day_string[day] + repeat_string;
+        title = "" + (index + 1) + ") " + zone.name + ": " + action_string + day_string[day] + repeat_string;
 
         if (action == ACTION_TRANSFER && transfer_zone) {
             title += " to " + transfer_zone.name;
@@ -498,14 +602,16 @@ function get_alarm_title(settings, index) {
         } else {
             title += " @ " + valid_time.friendly;
         }
+    } else if (index < settings.alarm_count - 1) {
+        title = "" + (index + 1) + ") " + "Inactive Alarm";
     } else {
-        title = "Alarm " + (index + 1) + " not set";
+        title = "New Alarm";
     }
 
     return title;
 }
 
-function get_action_string(action) {
+function get_action_string(action, source) {
     let action_string = "";
 
     switch (action) {
@@ -516,7 +622,11 @@ function get_action_string(action) {
             action_string = "Stop";
             break;
         case ACTION_PLAY:
-            action_string = "Play";
+            if (source.length > 12) {
+                action_string = 'Play "' + source.slice(0, 9) + '..."';
+            } else {
+                action_string = 'Play "' + source + '"';
+            }
             break;
         case ACTION_TRANSFER:
             action_string = "Transfer";
@@ -540,17 +650,30 @@ function add_pending_alarm(entry) {
 
 function get_pending_alarms_string() {
     const day = ['Sun', 'Mon', 'Tue', 'Wed', 'Thu', 'Fri', 'Sat'];
+    const max_listed = 5;
     let alarm_string = "";
 
-    for (let i = 0; i < pending_alarms.length; i++) {
+    for (let i = 0; i < pending_alarms.length && i < max_listed; i++) {
         const date_time = new Date(pending_alarms[i].timeout);
+        let time = date_time.toLocaleTimeString();
 
-        alarm_string += pending_alarms[i].action + " on " + day[date_time.getDay()];
-        alarm_string += " @ " + date_time.toLocaleTimeString() + "\n";
+        if (isNaN(time[time.length - 1]) == false) {
+            time = time.slice(0, -3);
+        } else if (time[time.length - 1] == 'M') {
+            time = time.slice(0, -6) + time.slice(-3);
+        }
+
+        alarm_string += "\n" + pending_alarms[i].action + " on " + day[date_time.getDay()];
+        alarm_string += " @ " + time;
     }
 
     if (alarm_string.length) {
-        alarm_string = "Pending Alarms:\n" + alarm_string;
+        if (pending_alarms.length > max_listed) {
+            // Truncate to limit number of lines in status string
+            alarm_string = "Pending Alarms (first " + max_listed + "):" + alarm_string;
+        } else {
+            alarm_string = "Pending Alarms:" + alarm_string;
+        }
     } else {
         alarm_string = "No active Alarms";
     }
@@ -604,7 +727,7 @@ function set_timer(reset) {
                 // Configuration is already validated at this point, get processed fields
                 const valid_time = timer.validate_time_string(settings["wake_time_" + i], wake_day == ONCE);
 
-                date.setSeconds(0);
+                date.setSeconds(i * 2);     // Spread expire time of alarms
                 date.setMilliseconds(0);
 
                 let timeout_time = date.getTime();
@@ -664,8 +787,11 @@ function set_timer(reset) {
                         timeout_time -= tz_offset * 60 * 1000;
                     }
                 }
+                const source_type = settings["source_type_" + i];
+                const source = (source_type == SRC_QUEUE ? source_strings[source_type]
+                                                         : settings["source_entry_" + i]);
                 let action_string = settings["zone_" + i].name + ": ";
-                action_string += get_action_string(action);
+                action_string += get_action_string(action, source);
 
                 add_pending_alarm( { timeout: timeout_time, action: action_string } );
 
@@ -694,20 +820,42 @@ function timer_timed_out(index) {
 
     timeout_id[index] = null;
 
+    log("Alarm " + (index + 1) + " expired");
+
     if (core) {
         const output = settings["zone_" + index];
         let zone = transport.zone_by_output_id(output.output_id);
 
         if (zone) {
             const action = settings["wake_action_" + index];
+            const source_type = settings["source_type_" + index];
+            const source_entry = settings["source_entry_" + index];
             let postponed = false;
 
-            if (zone.state == 'playing') {
+            if (action == ACTION_PLAY && source_type != SRC_QUEUE && source_entry) {
+                // Activate selected profile
+                select_profile(wake_settings, () => {
+                    // Activate selected source
+                    const path = [source_strings[source_type], source_entry]
+                                 .concat(activation_strings[source_type]);
+
+                    log(path);
+
+                    refresh_browse({ pop_all: true }, path, (item, done) => {
+                        refresh_browse({
+                            hierarchy:         "browse",
+                            zone_or_output_id: zone.zone_id,
+                            item_key:          item.item_key
+                        });
+                    });
+                });
+            } else if (zone.state == 'playing') {
                 const trans_time = (settings["transition_type_" + index] == TRANS_TRACKBOUND ?
                                     +settings["transition_time_" + index] * 60 : 0);
                 const now_playing = zone.now_playing;
 
                 if (trans_time > 0 && now_playing && (action == ACTION_STOP || action == ACTION_STANDBY)) {
+                    // Make transition at track boundary
                     const length = now_playing.length;
                     const properties = {
                         now_playing:     { seek_position: 0 },
@@ -790,11 +938,11 @@ function control(settings, zone, output, index) {
                 clearInterval(interval_id[index]);
             }
 
-            interval_id[index] = setInterval(take_fade_step, ms_per_step,
-                                                index, start_volume, end_volume);
+            interval_id[index] = setInterval(take_fade_step, ms_per_step, index, start_volume, end_volume);
 
-            if (zone.state == 'playing' &&
-                (action == ACTION_STANDBY || action == ACTION_STOP)) {
+            log("Fading activated");
+
+            if (zone.state == 'playing' && (action == ACTION_STANDBY || action == ACTION_STOP)) {
                 // Remain playing during fade out
                 action = ACTION_NONE;
             }
@@ -806,8 +954,10 @@ function control(settings, zone, output, index) {
 
     switch (action) {
         case ACTION_PLAY:
-            // Set wake volume, even if already playing
-            transport.change_volume(output, "absolute", end_volume);
+            if (current_volume) {
+                // Set wake volume, even if already playing
+                transport.change_volume(output, "absolute", end_volume);
+            }
 
             if (zone.state != 'playing') {
                 transport.control(output, 'play');
@@ -816,12 +966,14 @@ function control(settings, zone, output, index) {
         case ACTION_STOP:
             if (zone.state == 'playing') {
                 transport.control(output, zone.is_pause_allowed ? 'pause' : 'stop');
+            } else {
+                log("Playback already stopped");
             }
             break;
         case ACTION_STANDBY:
             transport.standby(output, {}, function(error) {
                 if (error) {
-                    console.log("Output doesn't support standby");
+                    log("Output doesn't support standby");
 
                     if (zone.state == 'playing') {
                         transport.control(output, zone.is_pause_allowed ? 'pause' : 'stop');
@@ -832,8 +984,10 @@ function control(settings, zone, output, index) {
         case ACTION_TRANSFER:
             const transfer_zone = settings["transfer_zone_" + index];
 
-            // Set volume for the zone we transfer to
-            transport.change_volume(transfer_zone, "absolute", end_volume);
+            if (current_volume) {
+                // Set volume for the zone we transfer to
+                transport.change_volume(transfer_zone, "absolute", end_volume);
+            }
             transport.transfer_zone(output, transfer_zone);
             break;
         case ACTION_NONE:
@@ -853,7 +1007,7 @@ function take_fade_step(index, start_volume, end_volume) {
         // Somebody else is turning the knob as well, hands off
         clearInterval(interval_id[index]);
         interval_id[index] = null;
-        console.log("Fading terminated for alarm " + (index + 1));
+        log("Fading terminated for alarm " + (index + 1));
     } else if (zone.state != 'playing') {
         // Postpone fading in case data is still loading
         if (zone.state != 'loading') {
@@ -886,13 +1040,142 @@ function take_fade_step(index, start_volume, end_volume) {
                         // Switch to standby
                         transport.standby(output, {}, function(error) {
                             if (error) {
-                                console.log("Output doesn't support standby");
+                                log("Output doesn't support standby");
                             }
                         });
                     }
                 });
             });
         }
+    }
+}
+
+function query_dropdowns(settings, cb) {
+    query_profiles(settings, () => {
+        query_entries(settings, () => {
+            cb && cb();
+        });
+    });
+}
+
+function query_profiles(settings, cb) {
+    const profile = settings["profile"];
+
+    profiles = [];      // Start off with an empty list
+
+    refresh_browse({ pop_all: true }, [ 'Settings', 'Profile', '' ], (item, done) => {
+        profiles.push({ title: item.title, value: item.title });
+
+        if (item.subtitle == "selected") {
+            active_profile = item.title;
+        }
+
+        if (done && cb) {
+            cb();
+        }
+    });
+}
+
+function query_entries(settings, cb) {
+    const source = settings["source_type_" + settings.selected_timer];
+    const force = (settings.profile != queried_profile);
+
+    if (source && (force || source !== queried_source_type)) {
+        const path = [source_strings[source], ''];
+        let values = [];
+
+        queried_profile = settings.profile;
+        queried_source_type = source;
+
+        refresh_browse({ pop_all: true }, path, (item, done) => {
+            if (item) {
+                values.push({ title: item.title, value: item.title });
+            }
+
+            if (done) {
+                source_entry_list = values;
+                cb && cb();
+            }
+        });
+    } else if (cb) {
+        cb();
+    }
+}
+
+function select_profile(settings, cb) {
+    if (settings.profile && settings.profile != active_profile) {
+        refresh_browse({ pop_all: true }, [ 'Settings', 'Profile', settings.profile ], (item) => {
+            const source_opts = {
+                hierarchy: "browse",
+                item_key:  item.item_key
+            };
+
+            refresh_browse(source_opts, [], (item, done) => {
+                if (done) {
+                    active_profile = settings.profile;
+                    log("Selected profile: " + settings.profile);
+
+                    cb && cb();
+                }
+            });
+        });
+    } else if (cb) {
+        cb();
+    }
+}
+
+function refresh_browse(opts, path, cb) {
+    opts = Object.assign({ hierarchy: "browse" }, opts);
+
+    core.services.RoonApiBrowse.browse(opts, (err, r) => {
+        if (err == false) {
+            if (r.action == "list") {
+                let list_offset = (r.list.display_offset > 0 ? r.list.display_offset : 0);
+
+                load_browse(list_offset, path, cb);
+            }
+        }
+    });
+}
+
+function load_browse(list_offset, path, cb) {
+    let opts = {
+        hierarchy:          "browse",
+        offset:             list_offset,
+        set_display_offset: list_offset
+    };
+
+    core.services.RoonApiBrowse.load(opts, (err, r) => {
+        if (err == false && path) {
+            if (!r.list.level || !path[r.list.level - 1] || r.list.title == path[r.list.level - 1]) {
+                if (r.items.length) {
+                    for (let i = 0; i < r.items.length; i++) {
+                        let match = (r.items[i].title == path[r.list.level]);
+
+                        if (!path[r.list.level] || match) {
+                            if (r.list.level < path.length - 1) {
+                                refresh_browse({ item_key: r.items[i].item_key }, path, cb);
+                                break;
+                            } else if (cb) {
+                                cb(r.items[i], match || i + 1 == r.items.length);
+                            }
+                        }
+                    }
+                } else if (cb) {
+                    cb(undefined, true);
+                }
+            }
+        }
+    });
+}
+
+function log(message, is_error) {
+    const date = new Date();
+
+    if (is_error) {
+        console.error(date.toISOString(), '- Err:', message);
+    } else {
+        console.log(date.toISOString(), '- Inf:', message);
     }
 }
 
@@ -906,32 +1189,39 @@ function init() {
     if (validate_config(wake_settings)) {
         roon.save_config("settings", wake_settings);
     }
-
-    set_timer(true);
 }
 
 var svc_settings = new RoonApiSettings(roon, {
     get_settings: function(cb) {
-        cb(makelayout(wake_settings));
+        query_dropdowns(wake_settings, () => {
+            cb(makelayout(wake_settings));
+        });
     },
     save_settings: function(req, isdryrun, settings) {
-        let l = makelayout(settings.values);
-        req.send_complete(l.has_error ? "NotValid" : "Success", { settings: l });
+        select_profile(settings.values, () => {
+            query_entries(settings.values, () => {
+                let l = makelayout(settings.values);
+                req.send_complete(l.has_error ? "NotValid" : "Success", { settings: l });
 
-        if (!isdryrun && !l.has_error) {
-            wake_settings = l.values;
-            svc_settings.update_settings(l);
-            roon.save_config("settings", wake_settings);
+                if (!isdryrun && !l.has_error) {
+                    wake_settings = l.values;
+                    if (!wake_settings.profile) {
+                        wake_settings.profile = active_profile;
+                    }
+                    svc_settings.update_settings(l);
+                    roon.save_config("settings", wake_settings);
 
-            set_timer(true);
-        }
+                    set_timer(true);
+                }
+            });
+        });
     }
 });
 
 var svc_status = new RoonApiStatus(roon);
 
 roon.init_services({
-    required_services:   [ RoonApiTransport ],
+    required_services:   [ RoonApiTransport, RoonApiBrowse ],
     provided_services:   [ svc_settings, svc_status ]
 });
 

@@ -72,7 +72,7 @@ var timer = new ApiTimeInput();
 var roon = new RoonApi({
     extension_id:        'com.theappgineer.alarm-clock',
     display_name:        'Alarm Clock',
-    display_version:     '0.7.1',
+    display_version:     '0.7.2',
     publisher:           'The Appgineer',
     email:               'theappgineer@gmail.com',
     website:             'https://community.roonlabs.com/t/roon-extension-alarm-clock/21556',
@@ -792,8 +792,7 @@ function set_timer(reset) {
                     }
                 }
                 const source_type = settings["source_type_" + i];
-                const source = (source_type == SRC_QUEUE ? source_strings[source_type]
-                                                         : settings["source_entry_" + i]);
+                const source = (source_type == SRC_QUEUE ? null : settings["source_entry_" + i]);
                 let action_string = settings["zone_" + i].name + ": ";
                 action_string += get_action_string(action, source);
 

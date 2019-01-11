@@ -5,6 +5,7 @@
     "main": "alarm-clock.js",
     "author": "The Appgineer",
     "license": "Apache-2.0",
+    "files": [],
     "dependencies": {
         "node-roon-api": "github:roonlabs/node-roon-api",
         "node-roon-api-settings": "github:roonlabs/node-roon-api-settings",

@@ -72,7 +72,7 @@ var timer = new ApiTimeInput();
 var roon = new RoonApi({
     extension_id:        'com.theappgineer.alarm-clock',
     display_name:        'Alarm Clock',
-    display_version:     '0.7.2',
+    display_version:     '0.7.3',
     publisher:           'The Appgineer',
     email:               'theappgineer@gmail.com',
     website:             'https://community.roonlabs.com/t/roon-extension-alarm-clock/21556',
@@ -1062,7 +1062,7 @@ function query_dropdowns(settings, cb) {
 }
 
 function query_profiles(settings, cb) {
-    const profile = settings["profile"];
+    const valid = false;
 
     profiles = [];      // Start off with an empty list
 
@@ -1073,8 +1073,17 @@ function query_profiles(settings, cb) {
             active_profile = item.title;
         }
 
-        if (done && cb) {
-            cb();
+        if (item.title == settings.profile) {
+            valid = true;
+        }
+
+        if (done) {
+            if (!valid) {
+                // Configured profile is no longer available
+                settings.profile = undefined;
+            }
+
+            cb && cb();
         }
     });
 }

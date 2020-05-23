@@ -1,4 +1,4 @@
-// Copyright 2017, 2018 The Appgineer
+// Copyright 2017, 2018, 2019, 2020 The Appgineer
 //
 // Licensed under the Apache License, Version 2.0 (the "License");
 // you may not use this file except in compliance with the License.
@@ -72,7 +72,7 @@ var timer = new ApiTimeInput();
 var roon = new RoonApi({
     extension_id:        'com.theappgineer.alarm-clock',
     display_name:        'Alarm Clock',
-    display_version:     '0.7.4',
+    display_version:     '0.7.5',
     publisher:           'The Appgineer',
     email:               'theappgineer@gmail.com',
     website:             'https://community.roonlabs.com/t/roon-extension-alarm-clock/21556',
@@ -87,7 +87,7 @@ var roon = new RoonApi({
             if (response == "Subscribed") {
                 zones = msg.zones;
 
-                select_profile(wake_settings);
+                select_profile(wake_settings, { multi_session_key: '0' });
                 set_timer(true);
             } else if (response == "Changed") {
                 if (msg.zones_changed) {
@@ -298,14 +298,15 @@ function makelayout(settings) {
             v.values.push({ title: "Enabled",  value: true });
         }
 
-        let zone = settings["zone_" + i];
+        const output = settings["zone_" + i];
         let current_volume = null;
 
-        if (zone) {
+        if (output) {
             // Get volume information from output
-            current_volume = get_current_volume_by_output_id(zone.output_id);
+            current_volume = get_current_volume_by_output_id(output.output_id);
 
             if (current_volume && settings["wake_volume_" + i] == null) {
+                // Set volume to the max of the output
                 settings["wake_volume_" + i] = current_volume.max;
             }
         }
@@ -731,7 +732,7 @@ function set_timer(reset) {
                 // Configuration is already validated at this point, get processed fields
                 const valid_time = timer.validate_time_string(settings["wake_time_" + i], wake_day == ONCE);
 
-                date.setSeconds(i * 2);     // Spread expire time of alarms
+                date.setSeconds(0);
                 date.setMilliseconds(0);
 
                 let timeout_time = date.getTime();
@@ -823,77 +824,88 @@ function timer_timed_out(index) {
 
     timeout_id[index] = null;
 
-    log("Alarm " + (index + 1) + " expired");
+    log(`Alarm ${index + 1} expired`);
 
-    if (core) {
-        const output = settings["zone_" + index];
-        let zone = transport.zone_by_output_id(output.output_id);
+    const output = settings["zone_" + index];
+    const zone = transport && transport.zone_by_output_id(output.output_id);
 
-        if (zone) {
-            const action = settings["wake_action_" + index];
-            const source_type = settings["source_type_" + index];
-            const source_entry = settings["source_entry_" + index];
-            let postponed = false;
+    if (!zone) return;
 
-            if (action == ACTION_PLAY && source_type != SRC_QUEUE && source_entry) {
-                // Activate selected profile
-                select_profile(wake_settings, () => {
-                    // Activate selected source
-                    const path = [source_strings[source_type], source_entry]
-                                 .concat(activation_strings[source_type]);
+    const action       = settings["wake_action_" + index];
+    const source_type  = settings["source_type_" + index];
+    const source_entry = settings["source_entry_" + index];
+    const trans_time   = (settings["transition_type_" + index] == TRANS_TRACKBOUND ?
+                         +settings["transition_time_" + index] * 60 : 0);
+    const now_playing  = zone.now_playing;
 
-                    log(path);
+    if (action == ACTION_PLAY && zone.outputs[0].output_id == output.output_id) {
+        // Perform source selection only for the first output within a grouped zone,
+        // the selection will then be played for all the outputs within that grouped zone
 
-                    refresh_browse({ pop_all: true }, path, (item, done) => {
-                        refresh_browse({
-                            hierarchy:         "browse",
-                            zone_or_output_id: zone.zone_id,
-                            item_key:          item.item_key
-                        });
-                    });
-                });
-            } else if (zone.state == 'playing') {
-                const trans_time = (settings["transition_type_" + index] == TRANS_TRACKBOUND ?
-                                    +settings["transition_time_" + index] * 60 : 0);
-                const now_playing = zone.now_playing;
+        // Performing a play action on an output that is part of a grouped zone
+        // also starts playback on the other outputs of that grouped zone
+        // Grouped zone fading is achieved by the user by setting separate fading alarms
+        // for the individual outputs of the grouped zone
 
-                if (trans_time > 0 && now_playing && (action == ACTION_STOP || action == ACTION_STANDBY)) {
-                    // Make transition at track boundary
-                    const length = now_playing.length;
-                    const properties = {
-                        now_playing:     { seek_position: 0 },
-                        state:           'stopped',
-                        is_play_allowed: true
+        if (source_type != SRC_QUEUE && source_entry) {
+            // Activate selected profile for the current session
+            // Use multi session feature of browse API via multi_session_key
+            // https://community.roonlabs.com/t/roon-extension-http-apis/24939/104
+            select_profile(settings, { multi_session_key: index.toString() }, () => {
+                // Activate selected source
+                const opts = {
+                    multi_session_key: index.toString(),
+                    pop_all: true
+                };
+                const path = [source_strings[source_type], source_entry]
+                             .concat(activation_strings[source_type]);
+
+                log(path);
+
+                refresh_browse(opts, path, (item, done) => {
+                    const opts = {
+                        hierarchy:         "browse",
+                        zone_or_output_id: output.output_id,
+                        item_key:          item.item_key,
+                        multi_session_key: index.toString()
                     };
 
-                    if (length && (length - now_playing.seek_position < trans_time)) {
-                        on_zone_property_changed(zone.zone_id, properties, function(zone) {
-                            control(settings, zone, output, index);
-                        });
-
-                        postponed = true;
-                    }
-                }
-            } else if (action == ACTION_PLAY && !zone.is_play_allowed && zone.is_previous_allowed) {
-                // Start off with previous track
-                transport.control(output, 'previous', function(error) {
-                    if (!error) {
-                        on_zone_property_changed(zone.zone_id, { is_play_allowed: true }, function(zone) {
-                            control(settings, zone, output, index);
-
-                            // Turn radio function on to keep the music going
-                            transport.change_settings(zone, { auto_radio: true });
-                        });
-                    }
+                    refresh_browse(opts, [], (item, done) => {
+                        if (done) {
+                            control(settings, zone, index);
+                        }
+                    });
                 });
-
-                postponed = true;
-            }
-
-            if (!postponed) {
-                control(settings, zone, output, index);
-            }
+            });
+        } else if (!zone.is_play_allowed && zone.is_previous_allowed) {
+            // Start off with previous track
+            transport.control(zone, 'previous', (error) => {
+                if (!error) {
+                    // Turn radio function on to keep the music going
+                    transport.change_settings(zone, { auto_radio: true });
+                    control(settings, zone, index);
+                }
+            });
+        } else {
+            control(settings, zone, index);
         }
+    } else if ((action == ACTION_STOP || action == ACTION_STANDBY) &&
+                zone.state == 'playing' && trans_time > 0 && now_playing) {
+        // Make transition at track boundary
+        const length = now_playing.length;
+        const properties = {
+            now_playing:     { seek_position: 0 },
+            state:           'stopped',
+            is_play_allowed: true
+        };
+
+        if (length && (length - now_playing.seek_position < trans_time)) {
+            on_zone_property_changed(zone.zone_id, properties, (zone) => {
+                control(settings, zone, index);
+            });
+        }
+    } else {
+        control(settings, zone, index);
     }
 
     const date = new Date();
@@ -913,9 +925,10 @@ function timer_timed_out(index) {
     set_timer(false);
 }
 
-function control(settings, zone, output, index) {
+function control(settings, zone, index) {
     const fade_time = (settings["transition_type_" + index] == TRANS_FADING ?
                        +settings["transition_time_" + index] : 0);
+    const output = settings["zone_" + index];
     const current_volume = get_current_volume(zone, output.output_id);
     let end_volume = settings["wake_volume_" + index];
     let action = settings["wake_action_" + index];
@@ -935,7 +948,7 @@ function control(settings, zone, output, index) {
         }
 
         if (end_volume != start_volume) {
-            let ms_per_step = (fade_time * 60 * 1000) / Math.abs(end_volume - start_volume);
+            const ms_per_step = (fade_time * 60 * 1000) / Math.abs(end_volume - start_volume);
 
             if (interval_id[index] != null) {
                 clearInterval(interval_id[index]);
@@ -1114,12 +1127,15 @@ function query_entries(settings, cb) {
     }
 }
 
-function select_profile(settings, cb) {
-    if (settings.profile && settings.profile != active_profile) {
-        refresh_browse({ pop_all: true }, [ 'Settings', 'Profile', settings.profile ], (item) => {
+function select_profile(settings, opts, cb) {
+    opts = Object.assign({ pop_all: true }, opts);
+
+    if (settings.profile) {
+        refresh_browse(opts, [ 'Settings', 'Profile', settings.profile ], (item) => {
             const source_opts = {
                 hierarchy: "browse",
-                item_key:  item.item_key
+                item_key:  item.item_key,
+                multi_session_key: opts.multi_session_key
             };
 
             refresh_browse(source_opts, [], (item, done) => {
@@ -1144,17 +1160,18 @@ function refresh_browse(opts, path, cb) {
             if (r.action == "list") {
                 let list_offset = (r.list.display_offset > 0 ? r.list.display_offset : 0);
 
-                load_browse(list_offset, path, cb);
+                load_browse(opts.multi_session_key, list_offset, path, cb);
             }
         }
     });
 }
 
-function load_browse(list_offset, path, cb) {
-    let opts = {
+function load_browse(multi_session_key, list_offset, path, cb) {
+    const opts = {
         hierarchy:          "browse",
         offset:             list_offset,
-        set_display_offset: list_offset
+        set_display_offset: list_offset,
+        multi_session_key
     };
 
     core.services.RoonApiBrowse.load(opts, (err, r) => {
@@ -1166,7 +1183,12 @@ function load_browse(list_offset, path, cb) {
 
                         if (!path[r.list.level] || match) {
                             if (r.list.level < path.length - 1) {
-                                refresh_browse({ item_key: r.items[i].item_key }, path, cb);
+                                const opts = {
+                                    item_key: r.items[i].item_key,
+                                    multi_session_key
+                                };
+
+                                refresh_browse(opts, path, cb);
                                 break;
                             } else if (cb) {
                                 cb(r.items[i], match || i + 1 == r.items.length);
@@ -1210,7 +1232,7 @@ var svc_settings = new RoonApiSettings(roon, {
         });
     },
     save_settings: function(req, isdryrun, settings) {
-        select_profile(settings.values, () => {
+        select_profile(settings.values, { multi_session_key: '0' }, () => {
             query_entries(settings.values, () => {
                 let l = makelayout(settings.values);
                 req.send_complete(l.has_error ? "NotValid" : "Success", { settings: l });

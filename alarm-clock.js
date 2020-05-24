@@ -23,6 +23,7 @@ var RoonApi          = require("node-roon-api"),
 
 const EXPECTED_CONFIG_REV = 4;
 const MAX_ALARM_COUNT = 20;
+const DEFAULT_SESSION = 0;
 
 const ACTION_NONE = -1;
 const ACTION_STOP = 0;
@@ -65,7 +66,7 @@ var source_entry_list = [];
 var queried_profile;
 var queried_source_type;
 var profiles = [];
-var active_profile;
+var active_profiles = {};
 
 var timer = new ApiTimeInput();
 
@@ -87,7 +88,7 @@ var roon = new RoonApi({
             if (response == "Subscribed") {
                 zones = msg.zones;
 
-                select_profile(wake_settings, { multi_session_key: '0' });
+                select_profile(wake_settings);
                 set_timer(true);
             } else if (response == "Changed") {
                 if (msg.zones_changed) {
@@ -851,20 +852,20 @@ function timer_timed_out(index) {
             // Activate selected profile for the current session
             // Use multi session feature of browse API via multi_session_key
             // https://community.roonlabs.com/t/roon-extension-http-apis/24939/104
-            select_profile(settings, { multi_session_key: index.toString() }, () => {
+            select_profile(settings, index, () => {
                 // Activate selected source
                 const opts = {
+                    hierarchy:         source_strings[source_type].toLowerCase().replace(' ', '_'),
                     multi_session_key: index.toString(),
-                    pop_all: true
+                    pop_all:           true
                 };
-                const path = [source_strings[source_type], source_entry]
-                             .concat(activation_strings[source_type]);
+                const path = [source_entry].concat(activation_strings[source_type]);
 
                 log(path);
 
                 refresh_browse(opts, path, (item, done) => {
                     const opts = {
-                        hierarchy:         "browse",
+                        hierarchy:         source_strings[source_type].toLowerCase().replace(' ', '_'),
                         zone_or_output_id: output.output_id,
                         item_key:          item.item_key,
                         multi_session_key: index.toString()
@@ -1079,11 +1080,11 @@ function query_profiles(settings, cb) {
 
     profiles = [];      // Start off with an empty list
 
-    refresh_browse({ pop_all: true }, [ 'Settings', 'Profile', '' ], (item, done) => {
+    refresh_browse({ pop_all: true }, [ 'Profile', '' ], (item, done) => {
         profiles.push({ title: item.title, value: item.title });
 
         if (item.subtitle == "selected") {
-            active_profile = item.title;
+            active_profiles[DEFAULT_SESSION] = item.title;
         }
 
         if (item.title == settings.profile) {
@@ -1102,17 +1103,20 @@ function query_profiles(settings, cb) {
 }
 
 function query_entries(settings, cb) {
-    const source = settings["source_type_" + settings.selected_timer];
+    const source_type = settings["source_type_" + settings.selected_timer];
     const force = (settings.profile != queried_profile);
 
-    if (source && (force || source !== queried_source_type)) {
-        const path = [source_strings[source], ''];
+    if (source_type && (force || source_type !== queried_source_type)) {
+        const opts = {
+            hierarchy: source_strings[source_type].toLowerCase().replace(' ', '_'),
+            pop_all:   true
+        };
         let values = [];
 
         queried_profile = settings.profile;
-        queried_source_type = source;
+        queried_source_type = source_type;
 
-        refresh_browse({ pop_all: true }, path, (item, done) => {
+        refresh_browse(opts, [''], (item, done) => {
             if (item) {
                 values.push({ title: item.title, value: item.title });
             }
@@ -1127,20 +1131,24 @@ function query_entries(settings, cb) {
     }
 }
 
-function select_profile(settings, opts, cb) {
-    opts = Object.assign({ pop_all: true }, opts);
+function select_profile(settings, index, cb) {
+    if (index === undefined) index = DEFAULT_SESSION;
 
-    if (settings.profile) {
-        refresh_browse(opts, [ 'Settings', 'Profile', settings.profile ], (item) => {
+    if (settings.profile && settings.profile != active_profiles[index]) {
+        const opts = {
+            pop_all:           true,
+            multi_session_key: index.toString()
+        };
+
+        refresh_browse(opts, [ 'Profile', settings.profile ], (item) => {
             const source_opts = {
-                hierarchy: "browse",
-                item_key:  item.item_key,
-                multi_session_key: opts.multi_session_key
+                item_key:          item.item_key,
+                multi_session_key: index.toString()
             };
 
             refresh_browse(source_opts, [], (item, done) => {
                 if (done) {
-                    active_profile = settings.profile;
+                    active_profiles[index] = settings.profile;
                     log("Selected profile: " + settings.profile);
 
                     cb && cb();
@@ -1153,25 +1161,25 @@ function select_profile(settings, opts, cb) {
 }
 
 function refresh_browse(opts, path, cb) {
-    opts = Object.assign({ hierarchy: "browse" }, opts);
+    opts = Object.assign({ hierarchy: "settings", multi_session_key: '0' }, opts);
 
     core.services.RoonApiBrowse.browse(opts, (err, r) => {
         if (err == false) {
             if (r.action == "list") {
                 let list_offset = (r.list.display_offset > 0 ? r.list.display_offset : 0);
 
-                load_browse(opts.multi_session_key, list_offset, path, cb);
+                load_browse(opts, list_offset, path, cb);
             }
         }
     });
 }
 
-function load_browse(multi_session_key, list_offset, path, cb) {
+function load_browse(input_opts, list_offset, path, cb) {
     const opts = {
-        hierarchy:          "browse",
+        hierarchy:          input_opts.hierarchy,
         offset:             list_offset,
         set_display_offset: list_offset,
-        multi_session_key
+        multi_session_key:  input_opts.multi_session_key
     };
 
     core.services.RoonApiBrowse.load(opts, (err, r) => {
@@ -1184,8 +1192,9 @@ function load_browse(multi_session_key, list_offset, path, cb) {
                         if (!path[r.list.level] || match) {
                             if (r.list.level < path.length - 1) {
                                 const opts = {
-                                    item_key: r.items[i].item_key,
-                                    multi_session_key
+                                    hierarchy:         input_opts.hierarchy,
+                                    item_key:          r.items[i].item_key,
+                                    multi_session_key: input_opts.multi_session_key
                                 };
 
                                 refresh_browse(opts, path, cb);
@@ -1232,7 +1241,7 @@ var svc_settings = new RoonApiSettings(roon, {
         });
     },
     save_settings: function(req, isdryrun, settings) {
-        select_profile(settings.values, { multi_session_key: '0' }, () => {
+        select_profile(settings.values, DEFAULT_SESSION, () => {
             query_entries(settings.values, () => {
                 let l = makelayout(settings.values);
                 req.send_complete(l.has_error ? "NotValid" : "Success", { settings: l });
@@ -1240,7 +1249,7 @@ var svc_settings = new RoonApiSettings(roon, {
                 if (!isdryrun && !l.has_error) {
                     wake_settings = l.values;
                     if (!wake_settings.profile) {
-                        wake_settings.profile = active_profile;
+                        wake_settings.profile = active_profiles[DEFAULT_SESSION];
                     }
                     svc_settings.update_settings(l);
                     roon.save_config("settings", wake_settings);

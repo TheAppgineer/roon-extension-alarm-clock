@@ -169,7 +169,7 @@ function makelayout(settings) {
 
     for (let i = 0; i < settings.alarm_count; i++) {
         selector.values.push({
-            title: get_alarm_title(settings, i),
+            title: get_alarm_title(settings, i).combined,
             value: i
         });
 
@@ -182,7 +182,7 @@ function makelayout(settings) {
         set_defaults(settings, settings.alarm_count++);
 
         selector.values.push({
-            title: get_alarm_title(settings, used_alarms),
+            title: get_alarm_title(settings, used_alarms).combined,
             value: used_alarms
         });
     }
@@ -199,6 +199,8 @@ function makelayout(settings) {
     l.layout.push(selector);
 
     const i = settings.selected_timer;
+    const title = get_alarm_title(settings, i);
+
     let alarm = {
         type:        "group",
         items:       []
@@ -435,12 +437,18 @@ function makelayout(settings) {
             }
         }
 
-        alarm.items.push(time);
+        if (title.time)   time.title  += `: ${title.date} ${title.time}`;
+        if (title.place)  place.title += `: ${title.place}`
+        if (title.action) event.title += `: ${title.action}`
+
         alarm.items.push(place);
         alarm.items.push(event);
+        alarm.items.push(time);
     }
 
-    alarm.title = selector.values[i].title;
+    alarm.title = title.combined;
+
+    if (title.hint) alarm.title += `\n${title.hint}`;
 
     l.layout.push(alarm);
 
@@ -549,24 +557,24 @@ function validate_config(settings) {
 
 function get_alarm_title(settings, index) {
     const active = settings["timer_active_" + index];
-    const zone = settings["zone_" + index];
+    const output = settings["zone_" + index];
     const day = settings["wake_day_" + index];
     let valid_time = timer.validate_time_string(settings["wake_time_" + index], day == ONCE);
-    let title;
+    let title = {};
 
-    if (active && zone && valid_time) {
+    if (active && output && valid_time) {
         const day_string = [
-            " on Sunday",     // SUN
-            " on Monday",     // MON
-            " on Tueday",     // TUE
-            " on Wednesday",  // WED
-            " on Thursday",   // THU
-            " on Friday",     // FRI
-            " on Saturday",   // SAT
+            "on Sunday",     // SUN
+            "on Monday",     // MON
+            "on Tueday",     // TUE
+            "on Wednesday",  // WED
+            "on Thursday",   // THU
+            "on Friday",     // FRI
+            "on Saturday",   // SAT
             "",               // ONCE
-            " daily",         // DAILY
-            " on weekdays",   // MON_FRI
-            " on the weekend" // WEEKEND
+            "daily",         // DAILY
+            "on weekdays",   // MON_FRI
+            "on the weekend" // WEEKEND
         ];
         const action = settings["wake_action_" + index];
         const source_type = settings["source_type_" + index];
@@ -574,7 +582,9 @@ function get_alarm_title(settings, index) {
         const source = (source_type == SRC_QUEUE ? null : source_entry);
         const transfer_zone = settings["transfer_zone_" + index];
         let repeat_string = "";
-        let action_string = get_action_string(action, source);
+
+        title.place = output.name;
+        title.action = get_action_string(action, source, transfer_zone);
 
         if (settings["repeat_" + index]) {
             switch (day) {
@@ -592,28 +602,34 @@ function get_alarm_title(settings, index) {
             repeat_string = " (this week)";
         }
 
-        title = "" + (index + 1) + ") " + zone.name + ": " + action_string + day_string[day] + repeat_string;
-
-        if (action == ACTION_TRANSFER && transfer_zone) {
-            title += " to " + transfer_zone.name;
-        }
+        title.date = day_string[day] + repeat_string;
 
         if (valid_time.relative) {
-            title += " in " + (valid_time.hours ? valid_time.hours + "h and " : "");
-            title += valid_time.minutes + "min";
+            title.time = "in " + (valid_time.hours ? valid_time.hours + "h and " : "");
+            title.time += valid_time.minutes + "min";
         } else {
-            title += " @ " + valid_time.friendly;
+            title.time = "@ " + valid_time.friendly;
         }
+
+        const zone = transport && transport.zone_by_output_id(output.output_id);
+
+        if (zone.outputs.length > 1) {
+            const output_type = (zone.outputs[0].output_id == output.output_id ? 'primary' : 'secondary');
+
+            title.hint = `(${output_type} output of grouped zone "${zone.display_name}")`;
+        }
+
+        title.combined = `${index + 1}) ${title.place}: ${title.action} ${title.date} ${title.time}`;
     } else if (index < settings.alarm_count - 1) {
-        title = "" + (index + 1) + ") " + "Inactive Alarm";
+        title.combined = `${index + 1}) Inactive Alarm`;
     } else {
-        title = "New Alarm";
+        title.combined = "New Alarm";
     }
 
     return title;
 }
 
-function get_action_string(action, source) {
+function get_action_string(action, source, transfer_zone) {
     let action_string = "";
 
     switch (action) {
@@ -636,6 +652,10 @@ function get_action_string(action, source) {
             break;
         case ACTION_TRANSFER:
             action_string = "Transfer";
+
+            if (transfer_zone) {
+                action_string += " to " + transfer_zone.name;
+            }
             break;
     }
 

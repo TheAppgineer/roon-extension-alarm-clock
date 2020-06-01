@@ -346,9 +346,9 @@ function makelayout(settings) {
         }
 
         // Volume control
-        const set_output_id = (action == ACTION_TRANSFER ? settings["transfer_zone_" + i].output_id
-                                                         : settings["zone_" + i].output_id);
-        const zone = transport.zone_by_output_id(set_output_id);
+        const set_output = (action == ACTION_TRANSFER ? settings["transfer_zone_" + i]
+                                                      : settings["zone_" + i]);
+        const zone = set_output && transport.zone_by_output_id(set_output.output_id);
 
         if (zone && zone.outputs) {
             let items = [];
@@ -360,7 +360,7 @@ function makelayout(settings) {
             zone.outputs.forEach((output) => {
                 let alarm_index;
 
-                if (output.output_id == set_output_id) {
+                if (output.output_id == set_output.output_id) {
                     alarm_index = i;
                 } else {
                     alarm_index = setup_secondary_output(settings, i, output.output_id);
@@ -376,7 +376,7 @@ function makelayout(settings) {
                         setting: 'wake_volume_' + alarm_index
                     };
 
-                    if (output.output_id == set_output_id) {
+                    if (output.output_id == set_output.output_id) {
                         // Put selected output at the top
                         items.unshift(entry);
                     } else {
@@ -395,7 +395,7 @@ function makelayout(settings) {
             });
 
             if (items.length === 1) {
-                const volume_type = get_current_volume(zone, set_output_id).type;
+                const volume_type = get_current_volume(zone, set_output.output_id).type;
 
                 items[0].title = 'Volume ' + (volume_type == 'db' ? ' (dB)' : '');
 
@@ -441,7 +441,7 @@ function makelayout(settings) {
 
             settings["transition_type_" + i] = TRANS_INSTANT;
         } else {
-            if (get_current_volume(zone, set_output_id)) {
+            if (set_output && get_current_volume(zone, set_output.output_id)) {
                 transition_type.values.push({
                     title: "Fading",
                     value: TRANS_FADING

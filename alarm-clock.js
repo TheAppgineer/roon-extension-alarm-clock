@@ -772,7 +772,7 @@ function get_current_volume(zone, output_id) {
             if (zone.outputs[i].output_id == output_id) {
                 return zone.outputs[i].volume;
             }
-        };
+        }
     }
 }
 
@@ -995,12 +995,12 @@ function control(settings, zone, index) {
                        +settings["transition_time_" + index] : 0);
 
     // Volume control for primary output
-    control_volume(settings, index, action, fade_time);
+    control_volume(settings, zone, index, action, fade_time);
 
     // Volume control for secondary outputs
     for (let i = MAX_ALARM_COUNT; i < secondary_count; i++) {
         if (settings['parent_of_' + i] === index) {
-            control_volume(settings, i, action, fade_time);
+            control_volume(settings, zone, i, action, fade_time);
         }
     }
 
@@ -1039,10 +1039,9 @@ function control(settings, zone, index) {
     }
 }
 
-function control_volume(settings, index, action, fade_time) {
+function control_volume(settings, zone, index, action, fade_time) {
     const output_id = (action == ACTION_TRANSFER ? settings["transfer_zone_" + index].output_id
                                                  : settings['zone_' + index].output_id);
-    const zone = transport.zone_by_output_id(output_id);
     const current_volume = get_current_volume(zone, output_id);
 
     if (current_volume) {

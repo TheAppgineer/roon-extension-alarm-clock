@@ -1044,54 +1044,55 @@ function control_volume(settings, zone, index, action, fade_time) {
                                                  : settings['zone_' + index].output_id);
     const current_volume = get_current_volume(zone, output_id);
 
-    if (current_volume) {
-        let end_volume = settings["wake_volume_" + index];
+    if (!current_volume) return;
 
-        if (fade_time > 0) {
-            // Take care of fading
-            let start_volume;
+    let end_volume = settings["wake_volume_" + index];
 
-            if (zone.state == 'playing') {
-                start_volume = current_volume.value;
-            } else {
-                start_volume = current_volume.min;
-            }
+    if (fade_time > 0) {
+        // Take care of fading
+        let start_volume;
 
-            if (action == ACTION_STANDBY || action == ACTION_STOP) {
-                end_volume = current_volume.min;
-            }
-
-            if (end_volume != start_volume) {
-                const ms_per_step = (fade_time * 60 * 1000) / Math.abs(end_volume - start_volume);
-
-                if (interval_id[index] != null) {
-                    clearInterval(interval_id[index]);
-                }
-
-                interval_id[index] = setInterval(take_fade_step, ms_per_step, index, action, start_volume, end_volume);
-
-                log('Fading activated for output: ' + output_id);
-
-                end_volume = start_volume;
-                fade_volume[index] = start_volume;
-            }
+        if (zone.state == 'playing') {
+            start_volume = current_volume.value;
+        } else {
+            start_volume = current_volume.min;
         }
 
-        if (action == ACTION_PLAY || action == ACTION_TRANSFER) {
-            // Set wake volume, even if already playing
-            transport.change_volume(output_id, "absolute", end_volume);
+        if (action == ACTION_STANDBY || action == ACTION_STOP) {
+            end_volume = current_volume.min;
         }
+
+        if (end_volume != start_volume) {
+            const steps = Math.abs(end_volume - start_volume) / current_volume.step;
+            const ms_per_step = (fade_time * 60 * 1000) / steps;
+
+            if (interval_id[index] != null) {
+                clearInterval(interval_id[index]);
+            }
+
+            interval_id[index] = setInterval(take_fade_step, ms_per_step, index, action, start_volume, end_volume);
+
+            log('Fading activated for output: ' + output_id);
+
+            end_volume = start_volume;
+            fade_volume[index] = start_volume;
+        }
+    }
+
+    if (action == ACTION_PLAY || action == ACTION_TRANSFER) {
+        // Set wake volume, even if already playing
+        transport.change_volume(output_id, "absolute", end_volume);
     }
 }
 
 function take_fade_step(index, action, start_volume, end_volume) {
     const output_id = wake_settings["zone_" + index].output_id;
-    const step = (start_volume < end_volume ? 1 : -1);
     const zone = transport.zone_by_output_id(output_id);
     const current_volume = get_current_volume(zone, output_id);
+    const step = (start_volume < end_volume ? 1 : -1) * current_volume.step;
 
     // Detect volume control collisions, allow for 1 step volume set back
-    if (current_volume && current_volume.value - fade_volume[index] > 1) {
+    if (current_volume.value - fade_volume[index] > 1) {
         // Somebody else is turning the knob as well, hands off
         clearInterval(interval_id[index]);
         interval_id[index] = null;

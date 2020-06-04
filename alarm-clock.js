@@ -202,24 +202,6 @@ function makelayout(settings) {
         type:        "group",
         items:       []
     };
-    let time = {
-        type:        "group",
-        title:       "Time",
-        collapsable: true,
-        items:       []
-    };
-    let place = {
-        type:        "group",
-        title:       "Zone",
-        collapsable: true,
-        items:       []
-    };
-    let event = {
-        type:        "group",
-        title:       "Event",
-        collapsable: true,
-        items:       []
-    };
 
     l.layout.push({
         type:    "dropdown",
@@ -232,28 +214,31 @@ function makelayout(settings) {
     });
 
     if (settings["timer_active_" + i]) {
-        // Time
-        let v = {
-            type:    "dropdown",
-            title:   "Day(s)",
-            values:  [
-                { title: "Once",      value: ONCE    },
-                { title: "Daily",     value: DAILY   },
-                { title: "Weekdays",  value: MON_FRI },
-                { title: "Weekend",   value: WEEKEND },
-                { title: "Sunday",    value: SUN     },
-                { title: "Monday",    value: MON     },
-                { title: "Tuesday",   value: TUE     },
-                { title: "Wednesday", value: WED     },
-                { title: "Thursday",  value: THU     },
-                { title: "Friday",    value: FRI     },
-                { title: "Saturday",  value: SAT     }
-            ],
-            setting: "wake_day_" + i
+        let time = {
+            type:        "group",
+            title:       "Time",
+            collapsable: true,
+            items:       [{
+                type:    "dropdown",
+                title:   "Day(s)",
+                values:  [
+                    { title: "Once",      value: ONCE    },
+                    { title: "Daily",     value: DAILY   },
+                    { title: "Weekdays",  value: MON_FRI },
+                    { title: "Weekend",   value: WEEKEND },
+                    { title: "Sunday",    value: SUN     },
+                    { title: "Monday",    value: MON     },
+                    { title: "Tuesday",   value: TUE     },
+                    { title: "Wednesday", value: WED     },
+                    { title: "Thursday",  value: THU     },
+                    { title: "Friday",    value: FRI     },
+                    { title: "Saturday",  value: SAT     }
+                ],
+                setting: "wake_day_" + i
+            }]
         };
-        time.items.push(v);
 
-        v = {
+        let v = {
             type:    "string",
             title:   "Time",
             setting: "wake_time_" + i
@@ -298,25 +283,33 @@ function makelayout(settings) {
             v.values.push({ title: "Enabled",  value: true });
         }
 
-        // Place
-        place.items.push({
-            type:    'zone',
-            title:   'Output',
-            setting: 'zone_' + i
-        });
+        let place = {
+            type:        "group",
+            title:       "Zone",
+            collapsable: true,
+            items:       [{
+                type:    'zone',
+                title:   'Output',
+                setting: 'zone_' + i
+            }]
+        };
 
-        // Event
-        event.items.push({
-            type:    "dropdown",
-            title:   "Action",
-            values:  [
-                { title: "Play",     value: ACTION_PLAY     },
-                { title: "Stop",     value: ACTION_STOP     },
-                { title: "Standby",  value: ACTION_STANDBY  },
-                { title: "Transfer", value: ACTION_TRANSFER }
-            ],
-            setting: "wake_action_" + i
-        });
+        let event = {
+            type:        "group",
+            title:       "Event",
+            collapsable: true,
+            items:       [{
+                type:    "dropdown",
+                title:   "Action",
+                values:  [
+                    { title: "Play",     value: ACTION_PLAY     },
+                    { title: "Stop",     value: ACTION_STOP     },
+                    { title: "Standby",  value: ACTION_STANDBY  },
+                    { title: "Transfer", value: ACTION_TRANSFER }
+                ],
+                setting: "wake_action_" + i
+            }]
+        };
 
         const action = settings["wake_action_" + i];
 
@@ -355,6 +348,8 @@ function makelayout(settings) {
 
             if (zone.outputs.length === 1) {
                 clear_secondary_outputs(settings, i);
+            } else {
+                place.items[0].title = 'Primary Output';
             }
 
             zone.outputs.forEach((output) => {

@@ -1,7 +1,5 @@
-ARG build_arch=amd64
-
 # Use an official node runtime as a parent image
-FROM ${build_arch}/node:8.14.1-alpine
+FROM node:12.16.3-alpine
 
 RUN mkdir -p /usr/src/app
 

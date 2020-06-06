@@ -73,7 +73,7 @@ var timer = new ApiTimeInput();
 var roon = new RoonApi({
     extension_id:        'com.theappgineer.alarm-clock',
     display_name:        'Alarm Clock',
-    display_version:     '0.8.0',
+    display_version:     '0.8.1',
     publisher:           'The Appgineer',
     email:               'theappgineer@gmail.com',
     website:             'https://community.roonlabs.com/t/roon-extension-alarm-clock/21556',
@@ -380,10 +380,10 @@ function makelayout(settings) {
 
                     const set_volume = settings[entry.setting];
                     if (!set_volume) {
-                        // Set volume to the max of the output
-                        settings[entry.setting] = volume.max;
+                        // Set volume to the current value of the output
+                        settings[entry.setting] = volume.value;
                     } else if (set_volume < volume.min || set_volume > volume.max) {
-                        entry.error = "Volume must be between " + volume.min + " and " + volume.max + ".";
+                        entry.error = `Volume must be between ${volume.min} and ${volume.max}`;
                         l.has_error = true;
                     }
                 }
@@ -984,25 +984,25 @@ function timer_timed_out(index) {
 }
 
 function control(settings, zone, index) {
-    const secondary_count = (settings.secondary_count ? settings.secondary_count : MAX_ALARM_COUNT);
+    const output_id = settings['zone_' + index].output_id;
     const action    = settings["wake_action_" + index];
     const fade_time = (settings["transition_type_" + index] == TRANS_FADING ?
                        +settings["transition_time_" + index] : 0);
 
-    // Volume control for primary output
-    control_volume(settings, zone, index, action, fade_time);
+    zone.outputs.forEach((output) => {
+        if (output.output_id == output_id) {
+            // Volume control for primary output
+            control_volume(settings, zone, index, action, fade_time);
+        } else {
+            // Volume control for secondary outputs
+            const secondary_index = setup_secondary_output(settings, index, output.output_id);
 
-    // Volume control for secondary outputs
-    for (let i = MAX_ALARM_COUNT; i < secondary_count; i++) {
-        if (settings['parent_of_' + i] === index) {
-            control_volume(settings, zone, i, action, fade_time);
+            control_volume(settings, zone, secondary_index, action, fade_time);
         }
-    }
+    });
 
     // Remain playing during fade out
     if (!(fade_time > 0 && zone.state == 'playing' && (action == ACTION_STANDBY || action == ACTION_STOP))) {
-        const output_id = settings['zone_' + index].output_id;
-
         switch (action) {
             case ACTION_PLAY:
                 if (zone.state != 'playing') {
@@ -1035,13 +1035,16 @@ function control(settings, zone, index) {
 }
 
 function control_volume(settings, zone, index, action, fade_time) {
+    // WARNING: Only a few settings are available for secondary outputs
+    //          Parent settings have to be passed via function parameters
     const output_id = (action == ACTION_TRANSFER ? settings["transfer_zone_" + index].output_id
                                                  : settings['zone_' + index].output_id);
     const current_volume = get_current_volume(zone, output_id);
 
     if (!current_volume) return;
 
-    let end_volume = settings["wake_volume_" + index];
+    // Fallback to current volume level if setting is not available
+    let end_volume = settings["wake_volume_" + index] ? settings["wake_volume_" + index] : current_volume.value;
 
     if (fade_time > 0) {
         // Take care of fading

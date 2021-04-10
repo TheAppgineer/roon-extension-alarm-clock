@@ -73,7 +73,7 @@ var timer = new ApiTimeInput();
 var roon = new RoonApi({
     extension_id:        'com.theappgineer.alarm-clock',
     display_name:        'Alarm Clock',
-    display_version:     '0.8.2',
+    display_version:     '0.8.3',
     publisher:           'The Appgineer',
     email:               'theappgineer@gmail.com',
     website:             'https://community.roonlabs.com/t/roon-extension-alarm-clock/21556',
@@ -1287,7 +1287,19 @@ function log(message, is_error) {
     }
 }
 
+function init_signal_handlers() {
+    const handle = function(signal) {
+        process.exit(0);
+    };
+
+    // Register signal handlers to enable a graceful stop of the container
+    process.on('SIGTERM', handle);
+    process.on('SIGINT', handle);
+}
+
 function init() {
+    init_signal_handlers();
+
     for (let i = 0; i < wake_settings.alarm_count; i++) {
         timeout_id.push(null);
         interval_id.push(null);

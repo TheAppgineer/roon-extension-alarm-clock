@@ -1,5 +1,6 @@
-# Use an official node runtime as a parent image
-FROM node:12.16.3-alpine
+ARG build_arch=amd64
+
+FROM multiarch/alpine:${build_arch}-v3.12
 
 RUN mkdir -p /usr/src/app
 
@@ -7,8 +8,8 @@ WORKDIR /usr/src/app
 
 COPY alarm-clock.js LICENSE package.json /usr/src/app/
 
-RUN apk add --no-cache git tzdata && \
+RUN apk add --no-cache nodejs tzdata git npm && \
     npm install && \
-    apk del git
+    apk del git npm
 
 CMD [ "node", "." ]

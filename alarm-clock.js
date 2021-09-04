@@ -73,7 +73,7 @@ var timer = new ApiTimeInput();
 var roon = new RoonApi({
     extension_id:        'com.theappgineer.alarm-clock',
     display_name:        'Alarm Clock',
-    display_version:     '0.8.3',
+    display_version:     '0.9.0',
     publisher:           'The Appgineer',
     email:               'theappgineer@gmail.com',
     website:             'https://community.roonlabs.com/t/roon-extension-alarm-clock/21556',
@@ -183,6 +183,12 @@ function makelayout(settings) {
             value: used_alarms
         });
     }
+
+    l.layout.push({
+        type:  'group',
+        title: `Local Time: ${get_local_time(new Date())}`,
+        items: []
+    });
 
     if (profiles.length > 1) {
         l.layout.push({
@@ -603,9 +609,10 @@ function get_alarm_title(settings, index) {
         const source_entry = settings["source_entry_" + index];
         const source = (source_type == SRC_QUEUE ? null : source_entry);
         const transfer_zone = settings["transfer_zone_" + index];
+        const zone = output && transport.zone_by_output_id(output.output_id);
         let repeat_string = "";
 
-        title.place = transport.zone_by_output_id(output.output_id).display_name;
+        title.place = (zone ? zone.display_name : output.name);
         title.action = get_action_string(action, source, transfer_zone);
 
         if (settings["repeat_" + index]) {
@@ -688,6 +695,19 @@ function add_pending_alarm(entry) {
     pending_alarms.splice(i, 0, entry);
 }
 
+function get_local_time(date_time) {
+    let time = date_time.toLocaleTimeString();
+
+    // Strip the seconds part, input example: 10:20:57 AM
+    if (isNaN(time[time.length - 1]) == false) {
+        time = time.slice(0, -3);
+    } else if (time[time.length - 1] == 'M') {
+        time = time.slice(0, -6) + time.slice(-3);
+    }
+
+    return time;
+}
+
 function get_pending_alarms_string() {
     const day = ['Sun', 'Mon', 'Tue', 'Wed', 'Thu', 'Fri', 'Sat'];
     const max_listed = 5;
@@ -695,16 +715,9 @@ function get_pending_alarms_string() {
 
     for (let i = 0; i < pending_alarms.length && i < max_listed; i++) {
         const date_time = new Date(pending_alarms[i].timeout);
-        let time = date_time.toLocaleTimeString();
-
-        if (isNaN(time[time.length - 1]) == false) {
-            time = time.slice(0, -3);
-        } else if (time[time.length - 1] == 'M') {
-            time = time.slice(0, -6) + time.slice(-3);
-        }
 
         alarm_string += "\n" + pending_alarms[i].action + " on " + day[date_time.getDay()];
-        alarm_string += " @ " + time;
+        alarm_string += " @ " + get_local_time(date_time);
     }
 
     if (alarm_string.length) {
@@ -860,9 +873,10 @@ function set_timers(reset) {
                     }
                 }
                 const source_type = settings["source_type_" + i];
+                const transfer_zone = settings["transfer_zone_" + i];
                 const source = (source_type == SRC_QUEUE ? null : settings["source_entry_" + i]);
                 let action_string = settings["zone_" + i].name + ": ";
-                action_string += get_action_string(action, source);
+                action_string += get_action_string(action, source, transfer_zone);
 
                 add_pending_alarm( { timeout: timeout_time, action: action_string } );
 
@@ -895,74 +909,74 @@ function timer_timed_out(index) {
 
     const zone = transport.zone_by_output_id(settings["zone_" + index].output_id);
 
-    if (!zone) return;
+    if (zone) {
+        const action       = settings["wake_action_" + index];
+        const trans_time   = (settings["transition_type_" + index] == TRANS_TRACKBOUND ?
+                            +settings["transition_time_" + index] * 60 : 0);
+        const now_playing  = zone.now_playing;
 
-    const action       = settings["wake_action_" + index];
-    const trans_time   = (settings["transition_type_" + index] == TRANS_TRACKBOUND ?
-                         +settings["transition_time_" + index] * 60 : 0);
-    const now_playing  = zone.now_playing;
+        if (action == ACTION_PLAY) {
+            const source_type  = settings["source_type_" + index];
+            const source_entry = settings["source_entry_" + index];
 
-    if (action == ACTION_PLAY) {
-        const source_type  = settings["source_type_" + index];
-        const source_entry = settings["source_entry_" + index];
-
-        if (source_type != SRC_QUEUE && source_entry) {
-            // Activate selected profile for the current session
-            // Use multi session feature of browse API via multi_session_key
-            // https://community.roonlabs.com/t/roon-extension-http-apis/24939/104
-            select_profile(settings, index, () => {
-                // Activate selected source
-                const opts = {
-                    hierarchy:         source_strings[source_type].toLowerCase().replace(' ', '_'),
-                    multi_session_key: index.toString(),
-                    pop_all:           true
-                };
-                const path = [source_entry].concat(activation_strings[source_type]);
-
-                log(path);
-
-                refresh_browse(opts, path, (item, done) => {
+            if (source_type != SRC_QUEUE && source_entry) {
+                // Activate selected profile for the current session
+                // Use multi session feature of browse API via multi_session_key
+                // https://community.roonlabs.com/t/roon-extension-http-apis/24939/104
+                select_profile(settings, index, () => {
+                    // Activate selected source
                     const opts = {
                         hierarchy:         source_strings[source_type].toLowerCase().replace(' ', '_'),
-                        zone_or_output_id: zone.zone_id,
-                        item_key:          item.item_key,
-                        multi_session_key: index.toString()
+                        multi_session_key: index.toString(),
+                        pop_all:           true
                     };
+                    const path = [source_entry].concat(activation_strings[source_type]);
 
-                    refresh_browse(opts, [], (item, done) => {
-                        if (done) {
-                            control(settings, zone, index);
-                        }
+                    log(path);
+
+                    refresh_browse(opts, path, (item, done) => {
+                        const opts = {
+                            hierarchy:         source_strings[source_type].toLowerCase().replace(' ', '_'),
+                            zone_or_output_id: zone.zone_id,
+                            item_key:          item.item_key,
+                            multi_session_key: index.toString()
+                        };
+
+                        refresh_browse(opts, [], (item, done) => {
+                            if (done) {
+                                control(settings, zone, index);
+                            }
+                        });
                     });
                 });
-            });
-        } else if (!zone.is_play_allowed && zone.is_previous_allowed) {
-            // Start off with previous track
-            transport.control(zone, 'previous', (error) => {
-                if (!error) {
-                    // Turn radio function on to keep the music going
-                    transport.change_settings(zone, { auto_radio: true });
-                    control(settings, zone, index);
-                }
+            } else if (!zone.is_play_allowed && zone.is_previous_allowed) {
+                // Start off with previous track
+                transport.control(zone, 'previous', (error) => {
+                    if (!error) {
+                        // Turn radio function on to keep the music going
+                        transport.change_settings(zone, { auto_radio: true });
+                        control(settings, zone, index);
+                    }
+                });
+            } else {
+                control(settings, zone, index);
+            }
+        } else if ((action == ACTION_STOP || action == ACTION_STANDBY) &&
+                zone.state == 'playing' && trans_time > 0 && now_playing.length &&
+                (now_playing.length - now_playing.seek_position < trans_time)) {
+            // Make transition at track boundary
+            const properties = {
+                now_playing:     { seek_position: 0 },
+                state:           'stopped',
+                is_play_allowed: true
+            };
+
+            on_zone_property_changed(zone.zone_id, properties, (zone) => {
+                control(settings, zone, index);
             });
         } else {
             control(settings, zone, index);
         }
-    } else if ((action == ACTION_STOP || action == ACTION_STANDBY) &&
-               zone.state == 'playing' && trans_time > 0 && now_playing.length &&
-               (now_playing.length - now_playing.seek_position < trans_time)) {
-        // Make transition at track boundary
-        const properties = {
-            now_playing:     { seek_position: 0 },
-            state:           'stopped',
-            is_play_allowed: true
-        };
-
-        on_zone_property_changed(zone.zone_id, properties, (zone) => {
-            control(settings, zone, index);
-        });
-    } else {
-        control(settings, zone, index);
     }
 
     const date = new Date();
@@ -1027,7 +1041,10 @@ function control(settings, zone, index) {
                 });
                 break;
             case ACTION_TRANSFER:
-                transport.transfer_zone(zone, settings["transfer_zone_" + index]);
+                // Only transfer if source zone is playing
+                if (zone.state == 'playing') {
+                    transport.transfer_zone(zone, settings["transfer_zone_" + index]);
+                }
                 break;
         }
     }

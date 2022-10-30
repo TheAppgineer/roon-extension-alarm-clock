@@ -73,7 +73,7 @@ var timer = new ApiTimeInput();
 var roon = new RoonApi({
     extension_id:        'com.theappgineer.alarm-clock',
     display_name:        'Alarm Clock',
-    display_version:     '0.9.0',
+    display_version:     '0.9.1',
     publisher:           'The Appgineer',
     email:               'theappgineer@gmail.com',
     website:             'https://community.roonlabs.com/t/roon-extension-alarm-clock/21556',
@@ -802,7 +802,7 @@ function set_timers(reset) {
 
     for (let i = 0; i < settings.alarm_count; i++) {
         if (reset || timeout_id[i] == null) {
-            if (settings["timer_active_" + i] && settings["zone_" + i].output_id) {
+            if (settings["timer_active_" + i] && settings["zone_" + i] && settings["zone_" + i].output_id) {
                 const action = settings["wake_action_" + i];
                 const wake_day = settings["wake_day_" + i];
                 const fade_time = (settings["transition_type_" + i] == TRANS_FADING ?

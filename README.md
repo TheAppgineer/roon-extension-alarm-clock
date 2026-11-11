@@ -18,7 +18,7 @@ If the manager has auto update enabled then changes will be pulled in the next t
    * On Mac OS, you can use [homebrew](http://brew.sh) to install Node.js.
    * On Linux, you can use your distribution's package manager, but make sure it installs a recent Node.js. Otherwise just install from the above link.
 
-   Make sure you are running node 5.x or higher. This can be verified on the command line with the following command:
+   Use a current Node.js, version 22 or higher (tested with 22 and 24). Older versions carry outdated time zone data, see the Notes. This can be verified on the command line with the following command:
 
    ```sh
    node -v
@@ -28,7 +28,7 @@ If the manager has auto update enabled then changes will be pulled in the next t
 
    ```sh
    $ node -v
-   v5.10.1
+   v22.23.4
    ```
 
 1. Install Git from https://git-scm.com/downloads.
@@ -61,4 +61,5 @@ If the manager has auto update enabled then changes will be pulled in the next t
 
 ## Notes
 * Automatic startup at system start is OS dependent and outside the scope of this document.
+* Alarm times use the local time zone of the system or container, set with the `TZ` environment variable (for example `TZ=America/Vancouver`). Node.js uses its own built-in time zone data, not the operating system files. To get new daylight saving rules, update Node.js. For the Docker image this means rebuilding it, which pulls the current Node.js.
 * Since you probably want to have this extension running 24/7, the most logical place for installation is on the system on which your Roon Core is running.
